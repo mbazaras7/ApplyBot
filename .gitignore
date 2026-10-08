@@ -1,0 +1,34 @@
+# Secrets
+.env
+
+# Run artifacts
+runs/
+
+# Personal data (kept local; a sanitized sample CV is added later for tests)
+examples/main.tex
+tests/fixtures/Job_description_test.pdf
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+dist/
+build/
+*.egg-info/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# LaTeX build output
+*.aux
+*.log
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+.claude
+CLAUDE.md
+docs
