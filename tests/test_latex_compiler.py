@@ -1,3 +1,4 @@
+import os
 import shutil
 from pathlib import Path
 
@@ -7,8 +8,12 @@ from applybot.latex.compiler import compile_tex
 
 SAMPLE = Path(__file__).parent / "fixtures" / "sample_cv.tex"
 
+HAS_COMPILER = bool(shutil.which("tectonic") or shutil.which("latexmk"))
+# CI's compile job sets REQUIRE_LATEX=1 so a missing compiler fails instead of skipping.
+REQUIRE_LATEX = os.environ.get("REQUIRE_LATEX") == "1"
+
 pytestmark = pytest.mark.skipif(
-    not (shutil.which("tectonic") or shutil.which("latexmk")),
+    not HAS_COMPILER and not REQUIRE_LATEX,
     reason="no LaTeX compiler installed",
 )
 
