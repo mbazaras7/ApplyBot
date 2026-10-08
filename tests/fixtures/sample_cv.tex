@@ -1,0 +1,143 @@
+%-------------------------
+% Sample CV for tests (fictional person), based on "Jake's Resume"
+%-------------------------
+
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.5in}
+\addtolength{\textheight}{1.0in}
+
+\urlstyle{same}
+
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large\bfseries
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+\pdfgentounicode=1
+
+\newcommand{\resumeItem}[1]{
+  \item\small{
+    {#1 \vspace{-2pt}}
+  }
+}
+
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.0in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}[leftmargin=0.15in, label=\textbullet]}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+%-------------------------------------------
+\begin{document}
+
+%----------HEADING----------
+\begin{center}
+    \textbf{\Huge \scshape Alex Example} \\ \vspace{4pt}
+    \small Springfield $|$ +00 000 000 0000 \\ \vspace{2pt}
+    \href{mailto:alex@example.com}{\underline{alex@example.com}} $|$
+    \href{https://github.com/example}{\underline{github.com/example}}
+\end{center}
+
+%-----------SUMMARY-----------
+\section{Summary}
+\resumeSubHeadingListStart
+\resumeItem{Software engineer with backend and full-stack experience in Python, Go and TypeScript, focused on reliable APIs and developer tooling.}
+\resumeSubHeadingListEnd
+
+%-----------EDUCATION-----------
+\section{Education}
+\resumeSubHeadingListStart
+\resumeSubheading
+{Springfield University}{Springfield}
+{Bachelor of Science in Computer Science}{Sep 2020 -- May 2024}
+\resumeItemListStart
+\resumeItem{Relevant Coursework: Algorithms \& Data Structures, Operating Systems, Databases}
+\resumeItemListEnd
+\resumeSubHeadingListEnd
+
+%-----------EXPERIENCE-----------
+\section{Experience}
+\resumeSubHeadingListStart
+
+\resumeSubheading
+{Acme Corp}{Springfield}
+{Software Engineer}{Jun 2024 -- Present}
+\resumeItemListStart
+\resumeItem{Built a \textbf{Python} ingestion service processing 2M events per day with 99.9\% uptime.}
+\resumeItem{Reduced API latency by 35\% by adding Redis caching to the hottest \texttt{GET} endpoints.}
+% \resumeItem{An old bullet that is commented out and must be ignored.}
+\resumeItemListEnd
+
+\resumeSubheading
+{Globex}{Shelbyville}
+{Software Engineering Intern}{Jun 2023 -- Aug 2023}
+\resumeItemListStart
+\resumeItem{Wrote integration tests for the billing service in Go, raising coverage from 40\% to 75\%.}
+\resumeItemListEnd
+
+\resumeSubHeadingListEnd
+
+%-----------PROJECTS-----------
+\section{Projects}
+\resumeSubHeadingListStart
+
+\resumeProjectHeading
+{\textbf{TaskFlow} $|$ \emph{TypeScript, React, PostgreSQL}}{2024}
+\resumeItemListStart
+\resumeItem{Built a Kanban-style task tracker with real-time updates (\href{https://example.com}{demo}).}
+\resumeItemListEnd
+
+\resumeSubHeadingListEnd
+
+%-----------SKILLS-----------
+\section{Technical Skills}
+\resumeSubHeadingListStart
+\resumeItem{
+\textbf{Languages:} Python, Go, TypeScript, SQL \\
+\textbf{Tools \& Platforms:} Docker, Redis, PostgreSQL, GitHub Actions
+}
+\resumeSubHeadingListEnd
+
+\end{document}
