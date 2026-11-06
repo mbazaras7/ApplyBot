@@ -5,8 +5,12 @@ description = "Tailor a LaTeX CV to a job description, with human review."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "anthropic>=2.6.0",
+    "httpx>=0.28.1",
     "pydantic>=2",
     "pypdf>=4",
+    "python-dotenv>=1.2.4",
+    "trafilatura>=2.3.1",
     "typer>=0.12",
 ]
 
