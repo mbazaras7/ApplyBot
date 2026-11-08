@@ -275,7 +275,9 @@ def check_new_skill_tokens(edit: Edit, block: Block, ctx: ValidationContext) -> 
     Adjacent flagged tokens are reported together, so `Spring Boot` is one problem.
     """
     known: set[str] = set()
-    for text in [b.text for b in ctx.doc.blocks] + [ctx.facts]:
+    # Headings count too: a project's tech stack or a job title is part of the CV.
+    heading_text = [arg for heading in ctx.doc.headings for arg in heading.args]
+    for text in [b.text for b in ctx.doc.blocks] + heading_text + [ctx.facts]:
         for token, _ in tokens(text):
             known |= token_forms(token)
     # Names the job capitalises mid-sentence ("experience with Kubernetes"), not words that

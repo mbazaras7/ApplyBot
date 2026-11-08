@@ -25,16 +25,31 @@ class Segment(BaseModel):
     block_id: str | None = None
 
 
+class Heading(BaseModel):
+    """A `\\resumeSubheading` or `\\resumeProjectHeading`, kept for search (never edited).
+
+    Its arguments hold facts that aren't in any block: degree, dates, job title, a
+    project's tech stack.
+    """
+
+    id: str  # e.g. "edu.dublin-city-university", "proj.alexide"
+    section: str
+    name: str
+    args: list[str]
+
+
 class CVDocument(BaseModel):
     """A CV split into a frozen preamble, body segments and the blocks they reference.
 
     Joining the preamble with every segment (raw text, or the referenced block's text)
-    gives back the original file exactly.
+    gives back the original file exactly. `headings` is read-only extra information and
+    plays no part in rebuilding the file.
     """
 
     preamble: str
     segments: list[Segment]
     blocks: list[Block]
+    headings: list[Heading] = []
 
     def block(self, block_id: str) -> Block:
         for block in self.blocks:
