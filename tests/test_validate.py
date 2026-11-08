@@ -20,6 +20,7 @@ from applybot.tools.validate import (
     split_items,
     stem,
     validate,
+    words,
 )
 
 SAMPLE = Path(__file__).parent / "fixtures" / "sample_cv.tex"
@@ -271,6 +272,16 @@ def test_substantial_rewrite_is_not_a_noop() -> None:
 def test_skills_reorder_is_not_a_noop(ctx: ValidationContext) -> None:
     problems = check(ctx, "skills.languages", "SQL, Go, Python, TypeScript")
     assert [p for p in problems if p.rule == "noop"] == []
+
+
+def test_words_split_slashes_and_drop_full_stops() -> None:
+    # Found on a real posting: "Typescript/React" hid "react" from the no-op check.
+    assert words("Web Development using Typescript/React.") == [
+        "web", "development", "using", "typescript", "react",
+    ]  # fmt: skip
+    assert words("Built with Node.js on Azure infrastructure.") == [
+        "built", "with", "node.js", "on", "azure", "infrastructure",
+    ]  # fmt: skip
 
 
 def test_stem_matches_word_forms() -> None:

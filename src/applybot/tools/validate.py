@@ -313,8 +313,13 @@ def check_new_skill_tokens(edit: Edit, block: Block, ctx: ValidationContext) -> 
 
 
 def words(text: str) -> list[str]:
-    """Lowercase words with LaTeX commands removed: `\\textbf{Python}` -> ["python"]."""
-    return re.findall(r"[a-z][a-z0-9+#./-]*", re.sub(r"\\[A-Za-z]+", " ", text).lower())
+    """Lowercase words with LaTeX commands removed: `\\textbf{Python}` -> ["python"].
+
+    Slashes split words (`Typescript/React` -> typescript, react) and a trailing full stop
+    is dropped, but dots inside a name stay (`Node.js`).
+    """
+    plain = re.sub(r"\\[A-Za-z]+", " ", text).lower()
+    return re.findall(r"[a-z][a-z0-9+#]*(?:\.[a-z0-9]+)*", plain)
 
 
 def stem(word: str) -> str:
