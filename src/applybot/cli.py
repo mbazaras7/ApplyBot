@@ -58,17 +58,15 @@ def tailor(
     sources = [job_url, job_file, job_text]
     if sum(s is not None for s in sources) != 1:
         raise typer.BadParameter("Pass exactly one of --job-url, --job-file or --job-text.")
-    if facts is not None:
-        console.print("[yellow]Note:[/yellow] --facts is not used yet.")
-
     job_source = job_url or (str(job_file) if job_file else None)
     try:
-        with console.status("Reading the job, generating edits and compiling..."):
+        with console.status("Reading the job, generating and validating edits, compiling..."):
             result = run_tailor(
                 cv_path,
                 AnthropicClient(),
                 job_source=job_source,
                 job_text=job_text,
+                facts_path=facts,
                 out_root=out_dir,
             )
     except EXPECTED_ERRORS as error:
@@ -85,6 +83,14 @@ def tailor(
     for edit in result.plan.edits:
         table.add_row(edit.block_id, edit.rationale)
     console.print(table)
+
+    validation = result.validation
+    console.print(f"Validation passed after {validation.attempts} attempt(s).")
+    for dropped in validation.dropped:
+        reasons = "; ".join(dropped.reasons)
+        console.print(f"[red]Dropped[/red] {dropped.edit.block_id}: {reasons}")
+    for warning in validation.warnings:
+        console.print(f"[yellow]Warning[/yellow] {warning}")
     console.print(f"Saved to {result.run_dir}")
 
     original, tailored = result.original, result.tailored
