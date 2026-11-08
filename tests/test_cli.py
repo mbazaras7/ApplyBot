@@ -9,6 +9,7 @@ from applybot.cli import app
 from applybot.pipeline import RunResult
 from applybot.tools.extract_job import JobPosting
 from applybot.tools.generate_edits import Edit, EditError, EditPlan
+from applybot.tools.validate import DroppedEdit, Problem, ValidatedPlan
 
 runner = CliRunner()
 
@@ -34,7 +35,27 @@ def fake_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[dict[str, 
     def run_tailor(cv_path: Path, llm: object, **kwargs: Any) -> RunResult:
         calls.append({"cv_path": cv_path, **kwargs})
         plan = EditPlan(edits=[Edit(block_id="exp.acme.1", new_text="x", rationale="Mirrors REST")])
-        return RunResult(run_dir=tmp_path, job=JOB, plan=plan, original=None, tailored=None)
+        validation = ValidatedPlan(
+            plan=plan,
+            attempts=2,
+            dropped=[
+                DroppedEdit(
+                    edit=Edit(block_id="exp.acme.2", new_text="y", rationale="r"),
+                    reasons=["numbers must stay unchanged (added 50)"],
+                )
+            ],
+            warnings=[
+                Problem(
+                    block_id="exp.acme.1",
+                    rule="noop",
+                    message="barely changes the text",
+                    severity="warning",
+                )
+            ],
+        )
+        return RunResult(
+            run_dir=tmp_path, job=JOB, validation=validation, original=None, tailored=None
+        )
 
     monkeypatch.setattr(cli, "AnthropicClient", lambda: object())
     monkeypatch.setattr(cli, "run_tailor", run_tailor)
@@ -63,6 +84,19 @@ def test_tailor_runs_pipeline(cv_file: Path, fake_run: list[dict[str, Any]]) -> 
     assert "Initech" in result.output
     assert "exp.acme.1" in result.output
     assert "Mirrors REST" in result.output
+    assert "after 2 attempt(s)" in result.output
+    assert "Dropped exp.acme.2: numbers must stay unchanged (added 50)" in result.output
+    assert "Warning exp.acme.1: barely changes the text" in result.output
+
+
+def test_tailor_passes_facts(cv_file: Path, tmp_path: Path, fake_run: list[dict[str, Any]]) -> None:
+    facts = tmp_path / "facts.md"
+    facts.write_text("Also used Rust.", encoding="utf-8")
+
+    result = runner.invoke(app, ["tailor", str(cv_file), "--job-text", "x", "--facts", str(facts)])
+
+    assert result.exit_code == 0, result.output
+    assert fake_run[0]["facts_path"] == facts
 
 
 def test_tailor_passes_job_file(

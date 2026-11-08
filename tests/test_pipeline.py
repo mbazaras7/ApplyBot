@@ -28,7 +28,10 @@ JOB_DETAILS = {
     "responsibilities": ["Build REST APIs"],
     "keywords": ["Python", "REST"],
 }
-NEW_BULLET = "Built a \\textbf{Python} REST ingestion service processing 2M events per day."
+NEW_BULLET = (
+    "Built a \\textbf{Python} Redis-backed ingestion service handling 2M events per day "
+    "at 99.9\\% uptime."
+)
 EDIT_PLAN = {
     "edits": [{"block_id": "exp.acme-corp.1", "new_text": NEW_BULLET, "rationale": "REST"}]
 }
@@ -61,7 +64,25 @@ def test_run_writes_artifacts(tmp_path: Path) -> None:
     assert tailored.startswith(original.decode("utf-8").split("\\begin{document}")[0])
     assert json.loads((run_dir / "job.json").read_text())["company"] == "Initech Ltd"
     assert json.loads((run_dir / "edits.json").read_text()) == EDIT_PLAN
+    validation = json.loads((run_dir / "validation.json").read_text())
+    assert validation["attempts"] == 1
+    assert validation["dropped"] == []
     assert result.original is None and result.tailored is None
+
+
+def test_facts_reach_validation(tmp_path: Path) -> None:
+    facts = tmp_path / "facts.md"
+    facts.write_text("I also know Rust.", encoding="utf-8")
+    result = run_tailor(
+        SAMPLE,
+        FakeLLM(),
+        job_text="A job",
+        facts_path=facts,
+        out_root=tmp_path,
+        now=NOW,
+        compile_pdf=False,
+    )
+    assert result.validation.attempts == 1
 
 
 def test_unknown_company_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
