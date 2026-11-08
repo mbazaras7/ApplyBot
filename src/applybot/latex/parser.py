@@ -7,7 +7,7 @@ group contains nested groups (`\\textbf{...}`) or escaped characters (`\\}`, `\\
 
 import re
 
-from applybot.latex.models import Block, BlockKind, CVDocument, Segment
+from applybot.latex.models import Block, BlockKind, CVDocument, Heading, Segment
 
 BEGIN_DOCUMENT = "\\begin{document}"
 
@@ -168,6 +168,7 @@ class _Builder:
     def __init__(self) -> None:
         self.segments: list[Segment] = []
         self.blocks: list[Block] = []
+        self.headings: list[Heading] = []
         self.counters: dict[str, int] = {}
 
     def raw(self, text: str) -> None:
@@ -177,6 +178,13 @@ class _Builder:
     def next_index(self, prefix: str) -> int:
         self.counters[prefix] = self.counters.get(prefix, 0) + 1
         return self.counters[prefix]
+
+    def add_heading(self, section: str, name: str, args: list[str]) -> None:
+        base = f"{section_key(section)}.{slugify(name)}"
+        heading_id, n = base, 2
+        while any(h.id == heading_id for h in self.headings):
+            heading_id, n = f"{base}-{n}", n + 1  # two headings with the same name
+        self.headings.append(Heading(id=heading_id, section=section, name=name, args=args))
 
     def add(self, block: Block, line: int) -> None:
         if any(existing.id == block.id for existing in self.blocks):
@@ -212,12 +220,10 @@ def parse(tex: str) -> CVDocument:
                 after += 1
             (section,), i = read_args(body, after, 1)
             heading = None
-        elif name == "resumeSubheading":
-            args, i = read_args(body, after, 4)
+        elif name in ("resumeSubheading", "resumeProjectHeading"):
+            args, i = read_args(body, after, 4 if name == "resumeSubheading" else 2)
             heading = heading_name(args[0])
-        elif name == "resumeProjectHeading":
-            args, i = read_args(body, after, 2)
-            heading = heading_name(args[0])
+            builder.add_heading(section, heading, args)
         elif name == "resumeItem":
             open_brace = skip_space(body, after)
             content, end = read_group(body, open_brace)
@@ -234,7 +240,12 @@ def parse(tex: str) -> CVDocument:
             i = after
 
     builder.raw(body[raw_start:])
-    return CVDocument(preamble=preamble, segments=builder.segments, blocks=builder.blocks)
+    return CVDocument(
+        preamble=preamble,
+        segments=builder.segments,
+        blocks=builder.blocks,
+        headings=builder.headings,
+    )
 
 
 def _add_item(

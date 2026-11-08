@@ -13,6 +13,8 @@ from applybot.agent.state import ReviewDecision, ReviewRound, TailorState
 from applybot.latex.compiler import CompileResult
 from applybot.llm.client import LLMClient
 from applybot.review.diff import ReviewRequest
+from applybot.tools.analyse import JobAnalysis
+from applybot.tools.cv_index import Embedder
 from applybot.tools.extract_job import JobPosting
 from applybot.tools.generate_edits import EditPlan
 from applybot.tools.validate import ValidatedPlan
@@ -23,6 +25,7 @@ Reviewer = Callable[[ReviewRequest], ReviewDecision]
 class RunResult(BaseModel):
     run_dir: Path
     job: JobPosting
+    analysis: JobAnalysis
     validation: ValidatedPlan
     review_history: list[ReviewRound]
     original: CompileResult | None
@@ -44,6 +47,7 @@ def run_tailor(
     out_root: Path = Path("runs"),
     now: datetime | None = None,
     compile_pdf: bool = True,
+    embedder: Embedder | None = None,
 ) -> RunResult:
     """Tailor the CV to a job given as a source (URL/file/-) or as text.
 
@@ -53,7 +57,7 @@ def run_tailor(
     if (job_source is None) == (job_text is None):
         raise ValueError("Pass exactly one of job_source or job_text.")
 
-    graph = build_graph(llm, compile_pdf=compile_pdf)
+    graph = build_graph(llm, compile_pdf=compile_pdf, embedder=embedder)
     # The checkpointer keeps one saved state per thread; each run gets its own thread.
     config = {"configurable": {"thread_id": str(uuid.uuid4())}, "recursion_limit": RECURSION_LIMIT}
     initial: TailorState = {
@@ -79,6 +83,7 @@ def run_tailor(
     return RunResult(
         run_dir=Path(state["run_dir"]),
         job=state["job"],
+        analysis=state["analysis"],
         validation=validation,
         review_history=state.get("review_history", []),
         original=state.get("original"),

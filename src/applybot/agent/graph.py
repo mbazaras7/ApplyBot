@@ -1,6 +1,7 @@
 """The tailoring workflow as a LangGraph state graph.
 
-    START -> load_cv -> fetch_job -> extract_job -> start_run -> generate_edits -> validate
+    START -> load_cv -> index_cv -> fetch_job -> extract_job -> analyse_and_plan
+        -> start_run -> generate_edits -> validate
     validate --route_after_validate--> generate_edits | drop_failing | render_diff
     drop_failing -> render_diff -> human_review (interrupt: waits for the reviewer)
     human_review --route_after_review--> compile | recheck | generate_edits
@@ -22,10 +23,12 @@ from langgraph.types import interrupt
 
 from applybot.agent.state import ReviewDecision, ReviewRound, TailorState
 from applybot.latex.compiler import CompileResult, compile_tex
-from applybot.latex.models import Block, CVDocument, Segment
+from applybot.latex.models import Block, CVDocument, Heading, Segment
 from applybot.latex.parser import parse, slugify
 from applybot.llm.client import LLMClient
 from applybot.review.diff import DiffEntry, ReviewRequest, build_diff
+from applybot.tools.analyse import JobAnalysis, RequirementFinding, analyse_and_plan
+from applybot.tools.cv_index import Chunk, CVIndex, Embedder, FastEmbedder
 from applybot.tools.extract_job import JobPosting, extract_job
 from applybot.tools.fetch_job import fetch_job
 from applybot.tools.generate_edits import Edit, EditPlan, apply_edits, generate_edits
@@ -45,8 +48,9 @@ from applybot.tools.validate import (
 # The checkpointer stores the state between steps. Our state holds Pydantic objects, so
 # their classes are listed here to be allowed back in when a paused run is resumed.
 CHECKPOINT_TYPES = (
-    CVDocument, Block, Segment, JobPosting, Edit, EditPlan, Problem, DroppedEdit,
-    CompileResult, ReviewDecision, ReviewRound, ReviewRequest, DiffEntry,
+    CVDocument, Block, Segment, Heading, JobPosting, Edit, EditPlan, Problem, DroppedEdit,
+    CompileResult, ReviewDecision, ReviewRound, ReviewRequest, DiffEntry, CVIndex, Chunk,
+    JobAnalysis, RequirementFinding,
 )  # fmt: skip
 # Each review round is a few graph steps; LangGraph's default limit of 25 is too low
 # for several rounds of edit / reject.
@@ -93,11 +97,12 @@ def route_after_review(state: TailorState) -> Literal["compile", "recheck", "gen
 
 
 class Nodes:
-    """The graph's steps. Held in a class so they share the LLM and the compile setting."""
+    """The graph's steps. Held in a class so they share the LLM, embedder and settings."""
 
-    def __init__(self, llm: LLMClient, compile_pdf: bool) -> None:
+    def __init__(self, llm: LLMClient, compile_pdf: bool, embedder: Embedder) -> None:
         self.llm = llm
         self.compile_pdf = compile_pdf
+        self.embedder = embedder
 
     def context(self, state: TailorState) -> ValidationContext:
         original = state.get("original")
@@ -117,6 +122,9 @@ class Nodes:
         facts = Path(facts_path).read_text(encoding="utf-8") if facts_path else ""
         return {"original_tex": original_tex, "doc": parse(original_tex), "facts": facts}
 
+    def index_cv(self, state: TailorState) -> TailorState:
+        return {"index": CVIndex.build(state["doc"], self.embedder)}
+
     def fetch_job(self, state: TailorState) -> TailorState:
         job_text = state.get("job_text")
         text = job_text.strip() if job_text is not None else fetch_job(str(state["job_source"]))
@@ -125,11 +133,17 @@ class Nodes:
     def extract_job(self, state: TailorState) -> TailorState:
         return {"job": extract_job(str(state["job_text"]), self.llm)}
 
+    def analyse_and_plan(self, state: TailorState) -> TailorState:
+        """The tool-use loop: search the CV per requirement, then classify and score."""
+        analysis = analyse_and_plan(state["job"], state["index"], self.embedder, self.llm)
+        return {"analysis": analysis}
+
     def start_run(self, state: TailorState) -> TailorState:
         """Create the run folder, save the inputs, and compile the original for its page count."""
         run_dir = make_run_dir(Path(state["out_root"]), state["job"].company, state["started"])
         write_text(run_dir / "original.tex", state["original_tex"])
         write_text(run_dir / "job.json", state["job"].model_dump_json(indent=2))
+        write_text(run_dir / "analysis.json", state["analysis"].model_dump_json(indent=2))
         original = compile_tex(run_dir / "original.tex") if self.compile_pdf else None
         return {"run_dir": str(run_dir), "original": original, "attempts": 0}
 
@@ -144,6 +158,7 @@ class Nodes:
             previous_plan=previous,
             errors=errors,
             reviewer_comment=comment,
+            analysis=state.get("analysis"),
         )
         return {
             "plan": plan,
@@ -175,6 +190,7 @@ class Nodes:
             dropped=state.get("dropped", []),
             attempts=state["attempts"],
             can_approve=not state.get("review_errors"),
+            analysis=state.get("analysis"),
         )
         return {"review_request": request}
 
@@ -230,19 +246,22 @@ class Nodes:
         return {"tailored": tailored}
 
 
-def build_graph(llm: LLMClient, compile_pdf: bool = True) -> Any:
-    nodes = Nodes(llm, compile_pdf)
+def build_graph(llm: LLMClient, compile_pdf: bool = True, embedder: Embedder | None = None) -> Any:
+    nodes = Nodes(llm, compile_pdf, embedder or FastEmbedder())
     graph = StateGraph(TailorState)
     for name in (
-        "load_cv", "fetch_job", "extract_job", "start_run", "generate_edits", "validate",
-        "drop_failing", "render_diff", "human_review", "recheck", "compile",
+        "load_cv", "index_cv", "fetch_job", "extract_job", "analyse_and_plan", "start_run",
+        "generate_edits", "validate", "drop_failing", "render_diff", "human_review",
+        "recheck", "compile",
     ):  # fmt: skip
         graph.add_node(name, getattr(nodes, name))
 
     graph.add_edge(START, "load_cv")
-    graph.add_edge("load_cv", "fetch_job")
+    graph.add_edge("load_cv", "index_cv")
+    graph.add_edge("index_cv", "fetch_job")
     graph.add_edge("fetch_job", "extract_job")
-    graph.add_edge("extract_job", "start_run")
+    graph.add_edge("extract_job", "analyse_and_plan")
+    graph.add_edge("analyse_and_plan", "start_run")
     graph.add_edge("start_run", "generate_edits")
     graph.add_edge("generate_edits", "validate")
     graph.add_conditional_edges(

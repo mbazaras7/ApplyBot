@@ -1,11 +1,14 @@
 """Fake LLM and reviewer for driving the graph in tests."""
 
+import re
+import zlib
 from collections.abc import Callable
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
 from applybot.agent.state import ReviewDecision
+from applybot.llm.client import Tool
 from applybot.review.diff import ReviewRequest
 
 T = TypeVar("T", bound=BaseModel)
@@ -43,18 +46,64 @@ BAD_METRIC = {
 }
 
 
+ANALYSIS: dict[str, Any] = {
+    "findings": [
+        {
+            "requirement": "Python",
+            "kind": "strength",
+            "evidence": ["exp.acme-corp.1"],
+            "note": "Built a Python ingestion service.",
+        },
+        {
+            "requirement": "Kubernetes",
+            "kind": "gap",
+            "evidence": [],
+            "note": "No container orchestration in the CV.",
+        },
+    ],
+    "fit_score": 64,
+    "fit_reasoning": "Strong Python, no Kubernetes.",
+}
+
+
+class FakeEmbedder:
+    """Deterministic bag-of-words vectors: texts sharing words point the same way."""
+
+    DIMENSIONS = 64
+
+    def vector(self, text: str) -> list[float]:
+        vector = [0.0] * self.DIMENSIONS
+        for word in re.findall(r"[a-z0-9]+", text.lower()):
+            vector[zlib.crc32(word.encode()) % self.DIMENSIONS] += 1.0
+        return vector
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self.vector(text) for text in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.vector(text)
+
+
 class ScriptedLLM:
-    """Answers JobDetails with JOB_DETAILS and each EditPlan request with the next plan."""
+    """Answers JobDetails with JOB_DETAILS, the analysis with ANALYSIS, and each EditPlan
+    request with the next scripted plan."""
 
     def __init__(self, plans: list[list[dict[str, Any]]]) -> None:
         self.plans = plans
         self.edit_prompts: list[str] = []
+        self.tool_loops: list[dict[str, Any]] = []
 
     def structured(self, *, system: str, user: str, schema: type[T]) -> T:
         if schema.__name__ == "JobDetails":
             return schema.model_validate(JOB_DETAILS)
         self.edit_prompts.append(user)
         return schema.model_validate({"edits": self.plans.pop(0)})
+
+    def tool_loop(
+        self, *, system: str, user: str, tools: list[Tool], schema: type[T], max_steps: int
+    ) -> T:
+        self.tool_loops.append({"user": user, "tools": tools, "max_steps": max_steps})
+        return schema.model_validate(ANALYSIS)
 
 
 class ScriptedReviewer:

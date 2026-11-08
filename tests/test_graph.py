@@ -5,11 +5,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from conftest import needs_review_router
 from fakes import (
     BAD_METRIC,
     GOOD_ACME,
     GOOD_GLOBEX,
+    FakeEmbedder,
     ScriptedLLM,
     ScriptedReviewer,
     approve,
@@ -25,8 +25,8 @@ SAMPLE = Path(__file__).parent / "fixtures" / "sample_cv.tex"
 
 
 def run_to_review(llm: ScriptedLLM, out_root: Path) -> tuple[Any, dict[str, Any], dict[str, Any]]:
-    """Run the graph until it pauses for review; no reviewer (or router) needed."""
-    graph = build_graph(llm, compile_pdf=False)
+    """Run the graph until it pauses for review, without a reviewer."""
+    graph = build_graph(llm, compile_pdf=False, embedder=FakeEmbedder())
     config = {"configurable": {"thread_id": str(uuid.uuid4())}, "recursion_limit": RECURSION_LIMIT}
     initial = {
         "cv_path": str(SAMPLE),
@@ -45,7 +45,7 @@ def request_of(state: dict[str, Any]) -> ReviewRequest:
     return value
 
 
-# --- Up to the review pause (runs without your router) -------------------------------------
+# --- Up to the review pause ----------------------------------------------------------------
 
 
 def test_pauses_for_review_before_compiling(tmp_path: Path) -> None:
@@ -59,6 +59,19 @@ def test_pauses_for_review_before_compiling(tmp_path: Path) -> None:
     request = request_of(state)
     assert [e.block_id for e in request.entries] == ["exp.acme-corp.1"]
     assert request.can_approve
+
+
+def test_analysis_runs_before_edits_and_reaches_review(tmp_path: Path) -> None:
+    llm = ScriptedLLM([[GOOD_ACME]])
+    _, _, state = run_to_review(llm, tmp_path)
+
+    assert len(llm.tool_loops) == 1  # analyse_and_plan ran its tool loop
+    assert "<analysis>" in llm.edit_prompts[0]  # ...and generation saw the result
+    assert '"kind": "gap"' in llm.edit_prompts[0]
+    analysis = request_of(state).analysis
+    assert analysis is not None and analysis.fit_score == 64  # shown at review
+    saved = json.loads((tmp_path / "20261108-120000_initech-ltd" / "analysis.json").read_text())
+    assert saved["fit_score"] == 64
 
 
 def test_validation_errors_are_retried(tmp_path: Path) -> None:
@@ -80,17 +93,16 @@ def test_still_failing_edits_are_dropped(tmp_path: Path) -> None:
     assert [d.edit.block_id for d in request.dropped] == ["exp.acme-corp.2"]
 
 
-# --- Through review (needs your route_after_review) -----------------------------------------
+# --- Through review ------------------------------------------------------------------------
 
 
 def run(llm: ScriptedLLM, reviewer: ScriptedReviewer, out_root: Path) -> Any:
     return run_tailor(
         SAMPLE, llm, reviewer, job_text="Backend Engineer at Initech. Python.",
-        out_root=out_root, compile_pdf=False,
+        out_root=out_root, compile_pdf=False, embedder=FakeEmbedder(),
     )  # fmt: skip
 
 
-@needs_review_router
 def test_approve_builds_the_tailored_cv(tmp_path: Path) -> None:
     result = run(ScriptedLLM([[GOOD_ACME]]), ScriptedReviewer([approve]), tmp_path)
 
@@ -101,7 +113,6 @@ def test_approve_builds_the_tailored_cv(tmp_path: Path) -> None:
     ]
 
 
-@needs_review_router
 def test_reject_regenerates_with_feedback(tmp_path: Path) -> None:
     llm = ScriptedLLM([[GOOD_ACME], [GOOD_GLOBEX]])
     reviewer = ScriptedReviewer([reject("Focus on testing"), approve])
@@ -113,7 +124,6 @@ def test_reject_regenerates_with_feedback(tmp_path: Path) -> None:
     assert [r.action for r in result.review_history] == ["reject", "approve"]
 
 
-@needs_review_router
 def test_valid_hand_edit_is_rechecked_then_approved(tmp_path: Path) -> None:
     hand = "Built a \\textbf{Python} ingestion service for 2M events per day at 99.9\\% uptime."
     reviewer = ScriptedReviewer([edit_text("exp.acme-corp.1", hand), approve])
@@ -126,7 +136,6 @@ def test_valid_hand_edit_is_rechecked_then_approved(tmp_path: Path) -> None:
     assert result.review_history[0].edited_blocks == ["exp.acme-corp.1"]
 
 
-@needs_review_router
 def test_failing_hand_edit_goes_back_to_review(tmp_path: Path) -> None:
     bad = "Built a \\textbf{Python} ingestion service for 5M events per day at 99.9\\% uptime."
     good = "Built a \\textbf{Python} ingestion service for 2M events per day at 99.9\\% uptime."

@@ -9,6 +9,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from applybot.latex.models import CVDocument
+from applybot.tools.analyse import JobAnalysis
 from applybot.tools.generate_edits import EditPlan
 from applybot.tools.validate import DroppedEdit, Problem
 
@@ -31,6 +32,7 @@ class ReviewRequest(BaseModel):
     dropped: list[DroppedEdit]
     attempts: int
     can_approve: bool  # False while hand edits still fail validation
+    analysis: JobAnalysis | None = None  # fit score, reasoning and gaps, shown first
 
 
 def build_diff(doc: CVDocument, plan: EditPlan, problems: list[Problem]) -> list[DiffEntry]:
@@ -75,7 +77,18 @@ def problem_line(problem: Problem) -> Text:
     return Text(f"{problem.severity}: {problem.message}", style=style)
 
 
+def render_fit(console: Console, analysis: JobAnalysis) -> None:
+    """Fit score and gaps first, so a poor match is obvious before reading any edit."""
+    body = [Text(analysis.fit_reasoning)]
+    for gap in analysis.gaps:
+        body.append(Text(f"gap: {gap.requirement}: {gap.note}", style="yellow"))
+    title = f"Fit {analysis.fit_score}/100"
+    console.print(Panel(Group(*body), title=title, title_align="left"))
+
+
 def render_review(console: Console, request: ReviewRequest) -> None:
+    if request.analysis is not None:
+        render_fit(console, request.analysis)
     for entry in request.entries:
         body: list[Text] = [word_diff(entry.old, entry.new), Text(entry.rationale, style="dim")]
         body += [problem_line(p) for p in entry.problems]

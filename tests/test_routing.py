@@ -1,7 +1,6 @@
 """The graph's routing functions: read the state, name the next node."""
 
 import pytest
-from conftest import needs_review_router
 
 from applybot.agent.graph import route_after_review, route_after_validate
 from applybot.agent.state import ReviewDecision, TailorState
@@ -26,7 +25,6 @@ def test_route_after_validate(problems: list[Problem], attempts: int, expected: 
     assert route_after_validate(state) == expected
 
 
-@needs_review_router
 @pytest.mark.parametrize(
     ("action", "expected"),
     [("approve", "compile"), ("edit", "recheck"), ("reject", "generate_edits")],

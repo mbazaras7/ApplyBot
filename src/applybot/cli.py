@@ -102,7 +102,7 @@ def tailor(
     if sum(s is not None for s in sources) != 1:
         raise typer.BadParameter("Pass exactly one of --job-url, --job-file or --job-text.")
     job_source = job_url or (str(job_file) if job_file else None)
-    console.print("Reading the job and generating edits...")
+    console.print("Reading the job, searching your CV for evidence and generating edits...")
     try:
         result = run_tailor(
             cv_path,
@@ -122,6 +122,7 @@ def tailor(
         f"[bold]{job.title or 'Unknown role'}[/bold] at {job.company or 'unknown company'}: "
         f"{len(result.plan.edits)} edits approved after {len(result.review_history)} review(s)."
     )
+    console.print(f"Fit {result.analysis.fit_score}/100, {len(result.analysis.gaps)} gap(s).")
     console.print(f"Saved to {result.run_dir}")
 
     original, tailored = result.original, result.tailored

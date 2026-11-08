@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from applybot.latex.compiler import CompileResult
 from applybot.latex.models import CVDocument
 from applybot.review.diff import ReviewRequest
+from applybot.tools.analyse import JobAnalysis
+from applybot.tools.cv_index import CVIndex
 from applybot.tools.extract_job import JobPosting
 from applybot.tools.generate_edits import EditPlan
 from applybot.tools.validate import DroppedEdit, Problem
@@ -46,7 +48,9 @@ class TailorState(TypedDict, total=False):
     original_tex: str
     doc: CVDocument
     facts: str
+    index: CVIndex
     job: JobPosting
+    analysis: JobAnalysis
     run_dir: str
     original: CompileResult | None
 
