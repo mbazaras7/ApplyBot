@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from fakes import ANALYSIS
 from rich.console import Console
 
 from applybot.latex.parser import parse
@@ -14,6 +15,7 @@ from applybot.review.editor import (
     edits_to_text,
     text_to_edits,
 )
+from applybot.tools.analyse import JobAnalysis
 from applybot.tools.generate_edits import Edit, EditPlan
 from applybot.tools.validate import Problem
 
@@ -95,6 +97,21 @@ def test_word_diff_marks_changes() -> None:
     styles = {(text.plain[span.start : span.end], str(span.style)) for span in text.spans}
     assert ("worked", "red strike") in styles
     assert ("collaborated", "green") in styles
+
+
+def test_review_starts_with_fit_and_gaps() -> None:
+    request = ReviewRequest(
+        plan=PLAN, entries=[], plan_problems=[], dropped=[], attempts=1, can_approve=True,
+        analysis=JobAnalysis.model_validate(ANALYSIS),
+    )  # fmt: skip
+    console = Console(record=True, width=120)
+    render_review(console, request)
+    output = console.export_text()
+
+    assert "Fit 64/100" in output
+    assert "Strong Python, no Kubernetes." in output
+    assert "gap: Kubernetes: No container orchestration in the CV." in output
+    assert output.index("Fit 64/100") < output.index("0 edits")  # fit comes first
 
 
 def test_render_review_shows_everything() -> None:

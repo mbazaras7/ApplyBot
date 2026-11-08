@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fakes import ANALYSIS
 from rich.prompt import Prompt
 from rich.text import Text
 from typer.testing import CliRunner
@@ -12,6 +13,7 @@ from applybot.cli import app
 from applybot.pipeline import RunResult
 from applybot.review.diff import ReviewRequest
 from applybot.review.editor import EditFileError
+from applybot.tools.analyse import JobAnalysis
 from applybot.tools.extract_job import JobPosting
 from applybot.tools.generate_edits import Edit, EditError, EditPlan
 from applybot.tools.validate import ValidatedPlan
@@ -44,6 +46,7 @@ def fake_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[dict[str, 
         return RunResult(
             run_dir=tmp_path,
             job=JOB,
+            analysis=JobAnalysis.model_validate(ANALYSIS),
             validation=validation,
             review_history=[ReviewRound(action="reject"), ReviewRound(action="approve")],
             original=None,
@@ -76,6 +79,7 @@ def test_tailor_runs_pipeline(cv_file: Path, fake_run: list[dict[str, Any]]) -> 
     assert fake_run[0]["job_source"] is None
     assert fake_run[0]["reviewer"] is cli.interactive_review
     assert "Initech: 1 edits approved after 2 review(s)." in result.output
+    assert "Fit 64/100, 1 gap(s)." in result.output
 
 
 # --- The interactive reviewer --------------------------------------------------------------

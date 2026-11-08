@@ -65,6 +65,25 @@ def test_slugify() -> None:
 # --- parse -------------------------------------------------------------------------------
 
 
+def test_headings_keep_their_arguments() -> None:
+    doc = parse(load(SAMPLE))
+    headings = {h.id: h for h in doc.headings}
+
+    assert list(headings) == [
+        "edu.springfield-university", "exp.acme-corp", "exp.globex", "proj.taskflow",
+    ]  # fmt: skip
+    assert headings["edu.springfield-university"].args[2] == (
+        "Bachelor of Science in Computer Science"
+    )
+    assert headings["exp.acme-corp"].args[3] == "Jun 2024 -- Present"
+    assert "TypeScript, React, PostgreSQL" in headings["proj.taskflow"].args[0]
+
+
+def test_same_named_headings_get_unique_ids() -> None:
+    body = "\\resumeSubheading{Acme}{A}{Dev}{2020}\n\\resumeSubheading{Acme}{B}{Lead}{2022}\n"
+    assert [h.id for h in parse(wrap(body)).headings] == ["exp.acme", "exp.acme-2"]
+
+
 def test_preamble_is_everything_before_begin_document() -> None:
     tex = load(SAMPLE)
     doc = parse(tex)

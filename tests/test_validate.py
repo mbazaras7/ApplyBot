@@ -138,7 +138,7 @@ def test_split_items_respects_brackets() -> None:
     ]
 
 
-# --- Adversarial: invented skill (your TODO(human)) ----------------------------------------
+# --- Adversarial: invented skills ----------------------------------------------------------
 
 
 def test_invented_kubernetes_is_rejected(ctx: ValidationContext) -> None:

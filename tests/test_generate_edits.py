@@ -6,6 +6,7 @@ from pydantic import BaseModel, ValidationError
 
 from applybot.latex.parser import parse
 from applybot.latex.renderer import render
+from applybot.llm.client import Tool
 from applybot.tools.extract_job import JobPosting
 from applybot.tools.generate_edits import (
     GENERATION_RULES,
@@ -46,6 +47,11 @@ class FakeLLM:
     def structured(self, *, system: str, user: str, schema: type[T]) -> T:
         self.requests.append({"system": system, "user": user, "schema": schema})
         return schema.model_validate(self.answer)
+
+    def tool_loop(
+        self, *, system: str, user: str, tools: list[Tool], schema: type[T], max_steps: int
+    ) -> T:
+        raise AssertionError("generate_edits doesn't use the tool loop")
 
 
 @pytest.fixture

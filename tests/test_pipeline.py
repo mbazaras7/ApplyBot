@@ -5,8 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from conftest import needs_review_router
-from fakes import GOOD_ACME, JOB_DETAILS, ScriptedLLM, ScriptedReviewer, approve
+from fakes import GOOD_ACME, JOB_DETAILS, FakeEmbedder, ScriptedLLM, ScriptedReviewer, approve
 
 from applybot.pipeline import run_tailor
 
@@ -16,7 +15,6 @@ HAS_COMPILER = bool(shutil.which("tectonic") or shutil.which("latexmk"))
 REQUIRE_LATEX = os.environ.get("REQUIRE_LATEX") == "1"
 
 
-@needs_review_router
 def test_run_writes_artifacts(tmp_path: Path) -> None:
     result = run_tailor(
         SAMPLE,
@@ -26,6 +24,7 @@ def test_run_writes_artifacts(tmp_path: Path) -> None:
         out_root=tmp_path,
         now=NOW,
         compile_pdf=False,
+        embedder=FakeEmbedder(),
     )
 
     run_dir = tmp_path / "20261107-153000_initech-ltd"
@@ -44,7 +43,6 @@ def test_run_writes_artifacts(tmp_path: Path) -> None:
     assert result.original is None and result.tailored is None
 
 
-@needs_review_router
 def test_facts_reach_validation(tmp_path: Path) -> None:
     facts = tmp_path / "facts.md"
     facts.write_text("I also know Rust.", encoding="utf-8")
@@ -58,16 +56,16 @@ def test_facts_reach_validation(tmp_path: Path) -> None:
         out_root=tmp_path,
         now=NOW,
         compile_pdf=False,
+        embedder=FakeEmbedder(),
     )
     assert result.validation.attempts == 1  # "Rust" is allowed because facts.md has it
 
 
-@needs_review_router
 def test_unknown_company_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(JOB_DETAILS, "company", None)
     result = run_tailor(
         SAMPLE, ScriptedLLM([[GOOD_ACME]]), ScriptedReviewer([approve]), job_text="A job",
-        out_root=tmp_path, now=NOW, compile_pdf=False,
+        out_root=tmp_path, now=NOW, compile_pdf=False, embedder=FakeEmbedder(),
     )  # fmt: skip
     assert result.run_dir.name == "20261107-153000_unknown"
 
@@ -77,12 +75,11 @@ def test_needs_exactly_one_job_input(tmp_path: Path) -> None:
         run_tailor(SAMPLE, ScriptedLLM([]), ScriptedReviewer([]), out_root=tmp_path)
 
 
-@needs_review_router
 @pytest.mark.skipif(not HAS_COMPILER and not REQUIRE_LATEX, reason="no LaTeX compiler installed")
 def test_run_compiles_both_versions(tmp_path: Path) -> None:
     result = run_tailor(
         SAMPLE, ScriptedLLM([[GOOD_ACME]]), ScriptedReviewer([approve]), job_text="A job",
-        out_root=tmp_path, now=NOW,
+        out_root=tmp_path, now=NOW, embedder=FakeEmbedder(),
     )  # fmt: skip
 
     assert result.original is not None and result.original.success
