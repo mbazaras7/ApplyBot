@@ -7,6 +7,7 @@ from typing import Annotated
 import anthropic
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.prompt import Prompt
 
 from applybot.agent.state import ReviewDecision
@@ -56,7 +57,8 @@ def interactive_review(request: ReviewRequest) -> ReviewDecision:
         choices = {"a": "approve", **choices}
     else:
         console.print("[red]Your edits have errors: edit them again or reject the plan.[/red]")
-    labels = ", ".join(f"[{key}]{action[1:]}" for key, action in choices.items())
+    # escape() stops Rich from reading "[a]" as a formatting tag and hiding it.
+    labels = ", ".join(escape(f"[{key}]") + action[1:] for key, action in choices.items())
 
     while True:
         action = choices[Prompt.ask(labels, choices=list(choices), console=console)]

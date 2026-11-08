@@ -3,6 +3,7 @@ from typing import Any
 
 import pytest
 from rich.prompt import Prompt
+from rich.text import Text
 from typer.testing import CliRunner
 
 from applybot import cli
@@ -106,6 +107,19 @@ def test_review_approve(monkeypatch: pytest.MonkeyPatch) -> None:
     offered = answer(monkeypatch, "a")
     assert cli.interactive_review(REQUEST) == ReviewDecision(action="approve")
     assert offered[0] == ["a", "e", "r"]
+
+
+def test_review_prompt_shows_the_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Found in the live demo: Rich read "[a]" as a formatting tag and printed "pprove".
+    prompts: list[str] = []
+
+    def ask(prompt: str, **kwargs: Any) -> str:
+        prompts.append(prompt)
+        return "a"
+
+    monkeypatch.setattr(Prompt, "ask", ask)
+    cli.interactive_review(REQUEST)
+    assert Text.from_markup(prompts[0]).plain == "[a]pprove, [e]dit, [r]eject"
 
 
 def test_review_reject_with_comment(monkeypatch: pytest.MonkeyPatch) -> None:
