@@ -1,4 +1,6 @@
-"""Deterministic checks on an EditPlan, and the generate -> validate -> retry loop.
+"""Deterministic checks on an EditPlan, and dropping edits that keep failing.
+
+The generate -> validate -> retry loop itself lives in the graph (agent/graph.py).
 
 Every check is plain code: the same plan always gets the same verdict, each rule is
 unit-tested, and the error messages are exact enough to send back to the model.
@@ -18,9 +20,7 @@ from applybot.latex.compiler import CompileResult, compile_tex
 from applybot.latex.models import Block, CVDocument
 from applybot.latex.parser import LatexParseError, parse
 from applybot.latex.renderer import render
-from applybot.llm.client import LLMClient
-from applybot.tools.extract_job import JobPosting
-from applybot.tools.generate_edits import Edit, EditPlan, generate_edits
+from applybot.tools.generate_edits import Edit, EditPlan
 
 MAX_RETRIES = 2
 LENGTH_TOLERANCE = 0.20
@@ -456,29 +456,6 @@ def errors_of(problems: list[Problem]) -> list[Problem]:
 
 def format_problems(problems: list[Problem]) -> str:
     return "\n".join(f"- {problem}" for problem in problems)
-
-
-def generate_valid_plan(
-    ctx: ValidationContext,
-    job: JobPosting,
-    llm: LLMClient,
-    compile_fn: CompileFn | None = None,
-    max_retries: int = MAX_RETRIES,
-) -> ValidatedPlan:
-    """Generate, validate, and retry with the errors; then drop edits that still fail."""
-    plan = generate_edits(ctx.doc, job, llm)
-    problems = validate(ctx, plan, compile_fn)
-    attempts = 1
-    while errors_of(problems) and attempts <= max_retries:
-        plan = generate_edits(
-            ctx.doc, job, llm, previous_plan=plan, errors=format_problems(errors_of(problems))
-        )
-        problems = validate(ctx, plan, compile_fn)
-        attempts += 1
-
-    plan, dropped, problems = drop_failing_edits(ctx, plan, problems, compile_fn)
-    warnings = [p for p in problems if p.severity == "warning"]
-    return ValidatedPlan(plan=plan, attempts=attempts, dropped=dropped, warnings=warnings)
 
 
 def drop_failing_edits(

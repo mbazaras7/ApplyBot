@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "anthropic>=2.6.0",
     "httpx>=0.28.1",
+    "langgraph>=1.2.20",
     "pydantic>=2",
     "pypdf>=4",
     "python-dotenv>=1.2.4",

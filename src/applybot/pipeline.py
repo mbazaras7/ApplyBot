@@ -1,28 +1,30 @@
-"""One tailoring run, end to end: job -> validated edits -> tailored .tex -> PDF."""
+"""Run the tailoring graph end to end, handing each review pause to a reviewer."""
 
+import uuid
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
+from langgraph.types import Command
 from pydantic import BaseModel
 
-from applybot.latex.compiler import CompileResult, compile_tex
-from applybot.latex.parser import parse, slugify
+from applybot.agent.graph import RECURSION_LIMIT, build_graph, start_timestamp
+from applybot.agent.state import ReviewDecision, ReviewRound, TailorState
+from applybot.latex.compiler import CompileResult
 from applybot.llm.client import LLMClient
-from applybot.tools.extract_job import JobPosting, extract_job
-from applybot.tools.fetch_job import fetch_job
-from applybot.tools.generate_edits import EditPlan, apply_edits
-from applybot.tools.validate import (
-    ValidatedPlan,
-    ValidationContext,
-    compile_text,
-    generate_valid_plan,
-)
+from applybot.review.diff import ReviewRequest
+from applybot.tools.extract_job import JobPosting
+from applybot.tools.generate_edits import EditPlan
+from applybot.tools.validate import ValidatedPlan
+
+Reviewer = Callable[[ReviewRequest], ReviewDecision]
 
 
 class RunResult(BaseModel):
     run_dir: Path
     job: JobPosting
     validation: ValidatedPlan
+    review_history: list[ReviewRound]
     original: CompileResult | None
     tailored: CompileResult | None
 
@@ -31,22 +33,10 @@ class RunResult(BaseModel):
         return self.validation.plan
 
 
-def make_run_dir(out_root: Path, company: str | None, now: datetime) -> Path:
-    """`runs/20261107-153000_accenture/`."""
-    name = f"{now:%Y%m%d-%H%M%S}_{slugify(company) if company else 'unknown'}"
-    run_dir = out_root / name
-    run_dir.mkdir(parents=True)
-    return run_dir
-
-
-def write_text(path: Path, text: str) -> None:
-    # Write bytes so line endings stay exactly as they are in the text.
-    path.write_bytes(text.encode("utf-8"))
-
-
 def run_tailor(
     cv_path: Path,
     llm: LLMClient,
+    reviewer: Reviewer,
     *,
     job_source: str | None = None,
     job_text: str | None = None,
@@ -55,37 +45,42 @@ def run_tailor(
     now: datetime | None = None,
     compile_pdf: bool = True,
 ) -> RunResult:
-    """Tailor the CV at `cv_path` to a job given as a source (URL/file/-) or as text."""
+    """Tailor the CV to a job given as a source (URL/file/-) or as text.
+
+    The graph pauses at every review. Each pause is handed to `reviewer`, and its answer
+    resumes the graph, until the reviewer approves and the CV is compiled.
+    """
     if (job_source is None) == (job_text is None):
         raise ValueError("Pass exactly one of job_source or job_text.")
-    text = job_text.strip() if job_text is not None else fetch_job(str(job_source))
 
-    job = extract_job(text, llm)
-    original_tex = cv_path.read_bytes().decode("utf-8")
-    doc = parse(original_tex)
+    graph = build_graph(llm, compile_pdf=compile_pdf)
+    # The checkpointer keeps one saved state per thread; each run gets its own thread.
+    config = {"configurable": {"thread_id": str(uuid.uuid4())}, "recursion_limit": RECURSION_LIMIT}
+    initial: TailorState = {
+        "cv_path": str(cv_path),
+        "job_source": job_source,
+        "job_text": job_text,
+        "facts_path": str(facts_path) if facts_path else None,
+        "out_root": str(out_root),
+        "started": start_timestamp(now),
+    }
 
-    run_dir = make_run_dir(out_root, job.company, now or datetime.now())
-    write_text(run_dir / "original.tex", original_tex)
-    write_text(run_dir / "job.json", job.model_dump_json(indent=2))
+    state = graph.invoke(initial, config)
+    while "__interrupt__" in state:  # paused at human_review
+        request = state["__interrupt__"][0].value
+        state = graph.invoke(Command(resume=reviewer(request)), config)
 
-    # Compile the original first: its page count is the limit the tailored CV must meet.
-    original = compile_tex(run_dir / "original.tex") if compile_pdf else None
-    ctx = ValidationContext(
-        doc=doc,
-        facts=facts_path.read_text(encoding="utf-8") if facts_path else "",
-        job_text=job.raw_text,
-        original_pages=original.page_count if original else None,
+    validation = ValidatedPlan(
+        plan=state["plan"],
+        attempts=state["attempts"],
+        dropped=state.get("dropped", []),
+        warnings=[p for p in state["problems"] if p.severity == "warning"],
     )
-    validation = generate_valid_plan(
-        ctx, job, llm, compile_fn=compile_text if compile_pdf else None
-    )
-    tailored_tex = apply_edits(doc, validation.plan)
-
-    write_text(run_dir / "edits.json", validation.plan.model_dump_json(indent=2))
-    write_text(run_dir / "validation.json", validation.model_dump_json(indent=2))
-    write_text(run_dir / "tailored.tex", tailored_tex)
-
-    tailored = compile_tex(run_dir / "tailored.tex") if compile_pdf else None
     return RunResult(
-        run_dir=run_dir, job=job, validation=validation, original=original, tailored=tailored
+        run_dir=Path(state["run_dir"]),
+        job=state["job"],
+        validation=validation,
+        review_history=state.get("review_history", []),
+        original=state.get("original"),
+        tailored=state.get("tailored"),
     )

@@ -1,19 +1,23 @@
 """Command-line entry point.."""
 
+import tempfile
 from pathlib import Path
 from typing import Annotated
 
 import anthropic
 import typer
 from rich.console import Console
-from rich.table import Table
+from rich.prompt import Prompt
 
+from applybot.agent.state import ReviewDecision
 from applybot.latex.compiler import CompilerNotFoundError
 from applybot.latex.parser import LatexParseError
 from applybot.llm.client import AnthropicClient, LLMConfigError, StructuredOutputError
 from applybot.pipeline import run_tailor
+from applybot.review.diff import ReviewRequest, render_review
+from applybot.review.editor import EditFileError, edits_to_text, open_in_editor, text_to_edits
 from applybot.tools.fetch_job import FetchError
-from applybot.tools.generate_edits import EditError
+from applybot.tools.generate_edits import EditError, EditPlan
 
 app = typer.Typer(help="Tailor a LaTeX CV to a job description.", no_args_is_help=True)
 console = Console()
@@ -28,6 +32,43 @@ EXPECTED_ERRORS = (
     CompilerNotFoundError,
     anthropic.APIError,
 )
+
+
+def edit_by_hand(plan: EditPlan) -> EditPlan:
+    """Write the edits to a text file, open the editor, and read the result back."""
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
+        f.write(edits_to_text(plan))
+        path = Path(f.name)
+    try:
+        console.print(f"Opening {path} in your editor. Save and close it to continue.")
+        open_in_editor(path)
+        return text_to_edits(path.read_text(encoding="utf-8"), plan)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def interactive_review(request: ReviewRequest) -> ReviewDecision:
+    """Show the diff and ask: approve, edit or reject."""
+    console.rule("Review the proposed edits")
+    render_review(console, request)
+    choices = {"e": "edit", "r": "reject"}
+    if request.can_approve:
+        choices = {"a": "approve", **choices}
+    else:
+        console.print("[red]Your edits have errors: edit them again or reject the plan.[/red]")
+    labels = ", ".join(f"[{key}]{action[1:]}" for key, action in choices.items())
+
+    while True:
+        action = choices[Prompt.ask(labels, choices=list(choices), console=console)]
+        if action == "approve":
+            return ReviewDecision(action="approve")
+        if action == "reject":
+            comment = Prompt.ask("What should change? (optional)", default="", console=console)
+            return ReviewDecision(action="reject", comment=comment)
+        try:
+            return ReviewDecision(action="edit", plan=edit_by_hand(request.plan))
+        except EditFileError as error:
+            console.print(f"[red]{error}[/red]")
 
 
 @app.callback()
@@ -59,38 +100,26 @@ def tailor(
     if sum(s is not None for s in sources) != 1:
         raise typer.BadParameter("Pass exactly one of --job-url, --job-file or --job-text.")
     job_source = job_url or (str(job_file) if job_file else None)
+    console.print("Reading the job and generating edits...")
     try:
-        with console.status("Reading the job, generating and validating edits, compiling..."):
-            result = run_tailor(
-                cv_path,
-                AnthropicClient(),
-                job_source=job_source,
-                job_text=job_text,
-                facts_path=facts,
-                out_root=out_dir,
-            )
+        result = run_tailor(
+            cv_path,
+            AnthropicClient(),
+            interactive_review,
+            job_source=job_source,
+            job_text=job_text,
+            facts_path=facts,
+            out_root=out_dir,
+        )
     except EXPECTED_ERRORS as error:
         console.print(f"[red]Error:[/red] {error}")
         raise typer.Exit(1) from error
 
     job = result.job
     console.print(
-        f"[bold]{job.title or 'Unknown role'}[/bold] at {job.company or 'unknown company'}"
+        f"[bold]{job.title or 'Unknown role'}[/bold] at {job.company or 'unknown company'}: "
+        f"{len(result.plan.edits)} edits approved after {len(result.review_history)} review(s)."
     )
-    table = Table(title=f"{len(result.plan.edits)} edits")
-    table.add_column("block")
-    table.add_column("rationale")
-    for edit in result.plan.edits:
-        table.add_row(edit.block_id, edit.rationale)
-    console.print(table)
-
-    validation = result.validation
-    console.print(f"Validation passed after {validation.attempts} attempt(s).")
-    for dropped in validation.dropped:
-        reasons = "; ".join(dropped.reasons)
-        console.print(f"[red]Dropped[/red] {dropped.edit.block_id}: {reasons}")
-    for warning in validation.warnings:
-        console.print(f"[yellow]Warning[/yellow] {warning}")
     console.print(f"Saved to {result.run_dir}")
 
     original, tailored = result.original, result.tailored
