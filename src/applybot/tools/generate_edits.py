@@ -103,15 +103,28 @@ def generate_edits(
     llm: LLMClient,
     previous_plan: EditPlan | None = None,
     errors: str = "",
+    reviewer_comment: str | None = None,
 ) -> EditPlan:
-    """Ask for an EditPlan. On a retry, pass the rejected plan and its validation errors."""
+    """Ask for an EditPlan.
+
+    On a retry, pass the rejected plan with either its validation `errors`, or
+    `reviewer_comment` when a person rejected it (an empty comment still counts).
+    """
     requirements = job.model_dump_json(indent=2, exclude={"raw_text"})
     user = (
         f"<job_requirements>\n{requirements}\n</job_requirements>\n\n"
         f"<job_posting>\n{job.raw_text}\n</job_posting>\n\n"
         f"<cv>\n{describe_cv(doc)}\n</cv>"
     )
-    if previous_plan is not None:
+    if previous_plan is not None and reviewer_comment is not None:
+        comment = reviewer_comment.strip() or "(no comment given)"
+        user += (
+            f"\n\n<previous_attempt>\n{previous_plan.model_dump_json(indent=2)}\n"
+            f"</previous_attempt>\n\n<reviewer_feedback>\n{comment}\n</reviewer_feedback>\n\n"
+            "The person this CV belongs to rejected your previous plan. Return a complete new "
+            "plan that addresses their feedback; if they gave none, take a different approach."
+        )
+    elif previous_plan is not None:
         user += (
             f"\n\n<previous_attempt>\n{previous_plan.model_dump_json(indent=2)}\n"
             f"</previous_attempt>\n\n<validation_errors>\n{errors}\n</validation_errors>\n\n"
