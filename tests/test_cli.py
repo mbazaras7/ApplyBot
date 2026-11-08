@@ -2,14 +2,18 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from rich.prompt import Prompt
 from typer.testing import CliRunner
 
 from applybot import cli
+from applybot.agent.state import ReviewDecision, ReviewRound
 from applybot.cli import app
 from applybot.pipeline import RunResult
+from applybot.review.diff import ReviewRequest
+from applybot.review.editor import EditFileError
 from applybot.tools.extract_job import JobPosting
 from applybot.tools.generate_edits import Edit, EditError, EditPlan
-from applybot.tools.validate import DroppedEdit, Problem, ValidatedPlan
+from applybot.tools.validate import ValidatedPlan
 
 runner = CliRunner()
 
@@ -32,29 +36,17 @@ def fake_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[dict[str, 
     """Replace the LLM and the pipeline, recording what the CLI passed in."""
     calls: list[dict[str, Any]] = []
 
-    def run_tailor(cv_path: Path, llm: object, **kwargs: Any) -> RunResult:
-        calls.append({"cv_path": cv_path, **kwargs})
+    def run_tailor(cv_path: Path, llm: object, reviewer: object, **kwargs: Any) -> RunResult:
+        calls.append({"cv_path": cv_path, "reviewer": reviewer, **kwargs})
         plan = EditPlan(edits=[Edit(block_id="exp.acme.1", new_text="x", rationale="Mirrors REST")])
-        validation = ValidatedPlan(
-            plan=plan,
-            attempts=2,
-            dropped=[
-                DroppedEdit(
-                    edit=Edit(block_id="exp.acme.2", new_text="y", rationale="r"),
-                    reasons=["numbers must stay unchanged (added 50)"],
-                )
-            ],
-            warnings=[
-                Problem(
-                    block_id="exp.acme.1",
-                    rule="noop",
-                    message="barely changes the text",
-                    severity="warning",
-                )
-            ],
-        )
+        validation = ValidatedPlan(plan=plan, attempts=1, dropped=[], warnings=[])
         return RunResult(
-            run_dir=tmp_path, job=JOB, validation=validation, original=None, tailored=None
+            run_dir=tmp_path,
+            job=JOB,
+            validation=validation,
+            review_history=[ReviewRound(action="reject"), ReviewRound(action="approve")],
+            original=None,
+            tailored=None,
         )
 
     monkeypatch.setattr(cli, "AnthropicClient", lambda: object())
@@ -81,12 +73,76 @@ def test_tailor_runs_pipeline(cv_file: Path, fake_run: list[dict[str, Any]]) -> 
     assert result.exit_code == 0, result.output
     assert fake_run[0]["job_text"] == "Backend engineer"
     assert fake_run[0]["job_source"] is None
-    assert "Initech" in result.output
-    assert "exp.acme.1" in result.output
-    assert "Mirrors REST" in result.output
-    assert "after 2 attempt(s)" in result.output
-    assert "Dropped exp.acme.2: numbers must stay unchanged (added 50)" in result.output
-    assert "Warning exp.acme.1: barely changes the text" in result.output
+    assert fake_run[0]["reviewer"] is cli.interactive_review
+    assert "Initech: 1 edits approved after 2 review(s)." in result.output
+
+
+# --- The interactive reviewer --------------------------------------------------------------
+
+REQUEST = ReviewRequest(
+    plan=EditPlan(edits=[Edit(block_id="exp.acme.1", new_text="new", rationale="r")]),
+    entries=[],
+    plan_problems=[],
+    dropped=[],
+    attempts=1,
+    can_approve=True,
+)
+
+
+def answer(monkeypatch: pytest.MonkeyPatch, *replies: str) -> list[list[str] | None]:
+    """Script Prompt.ask; returns the choices offered at each prompt."""
+    offered: list[list[str] | None] = []
+    queue = list(replies)
+
+    def ask(prompt: str, choices: list[str] | None = None, **kwargs: Any) -> str:
+        offered.append(choices)
+        return queue.pop(0)
+
+    monkeypatch.setattr(Prompt, "ask", ask)
+    return offered
+
+
+def test_review_approve(monkeypatch: pytest.MonkeyPatch) -> None:
+    offered = answer(monkeypatch, "a")
+    assert cli.interactive_review(REQUEST) == ReviewDecision(action="approve")
+    assert offered[0] == ["a", "e", "r"]
+
+
+def test_review_reject_with_comment(monkeypatch: pytest.MonkeyPatch) -> None:
+    answer(monkeypatch, "r", "Be more specific")
+    assert cli.interactive_review(REQUEST) == ReviewDecision(
+        action="reject", comment="Be more specific"
+    )
+
+
+def test_review_edit(monkeypatch: pytest.MonkeyPatch) -> None:
+    edited = EditPlan(edits=[Edit(block_id="exp.acme.1", new_text="mine", rationale="r")])
+    monkeypatch.setattr(cli, "edit_by_hand", lambda plan: edited)
+    answer(monkeypatch, "e")
+    assert cli.interactive_review(REQUEST) == ReviewDecision(action="edit", plan=edited)
+
+
+def test_review_hides_approve_when_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    offered = answer(monkeypatch, "r", "")
+    cli.interactive_review(REQUEST.model_copy(update={"can_approve": False}))
+    assert offered[0] == ["e", "r"]
+
+
+def test_review_bad_edit_file_asks_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(plan: EditPlan) -> EditPlan:
+        raise EditFileError("[exp.acme.1] has no text")
+
+    monkeypatch.setattr(cli, "edit_by_hand", broken)
+    answer(monkeypatch, "e", "a")
+    assert cli.interactive_review(REQUEST).action == "approve"
+
+
+def test_edit_by_hand_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_editor(path: Path) -> None:
+        path.write_text(path.read_text(encoding="utf-8").replace("new", "edited"), "utf-8")
+
+    monkeypatch.setattr(cli, "open_in_editor", fake_editor)
+    assert cli.edit_by_hand(REQUEST.plan).edits[0].new_text == "edited"
 
 
 def test_tailor_passes_facts(cv_file: Path, tmp_path: Path, fake_run: list[dict[str, Any]]) -> None:

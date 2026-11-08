@@ -16,6 +16,7 @@ from applybot.tools.validate import (
     brace_problems,
     check_noop,
     check_reparse,
+    drop_failing_edits,
     errors_of,
     split_items,
     stem,
@@ -323,6 +324,43 @@ def test_smuggled_bullet_is_rejected(ctx: ValidationContext) -> None:
     assert [p.message for p in problems] == [
         "must not contain \\resumeItem (only the text of the block may change)"
     ]
+
+
+def test_drop_named_edits_keeps_the_rest(ctx: ValidationContext) -> None:
+    bad = Edit(
+        block_id=ACME_2,
+        new_text="Reduced API latency by 50\\% by adding Redis caching to the hottest "
+        "\\texttt{GET} endpoints.",
+        rationale="r",
+    )
+    plan = EditPlan(edits=[Edit(block_id=ACME_1, new_text=GOOD_ACME_1, rationale="r"), bad])
+    kept, dropped, problems = drop_failing_edits(ctx, plan, validate(ctx, plan), None)
+
+    assert [e.block_id for e in kept.edits] == [ACME_1]
+    assert [(d.edit.block_id, d.reasons) for d in dropped] == [
+        (ACME_2, ["numbers must stay unchanged (added 50; removed 35)"])
+    ]
+    assert errors_of(problems) == []
+
+
+def test_page_overflow_drops_the_biggest_growth(ctx: ValidationContext) -> None:
+    def compile_fn(tex: str) -> CompileResult:
+        # Pretend the CV only fits on one page without the longer Acme edit.
+        return CompileResult(success=True, log="", page_count=2 if "Redis-backed" in tex else 1)
+
+    globex = Edit(
+        block_id="exp.globex.1",
+        new_text="Wrote Go integration tests for the billing service, lifting coverage from "
+        "40\\% to 75\\%.",
+        rationale="r",
+    )
+    plan = EditPlan(edits=[Edit(block_id=ACME_1, new_text=GOOD_ACME_1, rationale="r"), globex])
+    problems = validate(ctx, plan, compile_fn)
+    kept, dropped, _ = drop_failing_edits(ctx, plan, problems, compile_fn)
+
+    assert [e.block_id for e in kept.edits] == ["exp.globex.1"]
+    assert [d.edit.block_id for d in dropped] == [ACME_1]
+    assert "2 pages" in dropped[0].reasons[0]
 
 
 def test_reparse_backstop(ctx: ValidationContext) -> None:
