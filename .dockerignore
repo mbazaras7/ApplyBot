@@ -1,0 +1,18 @@
+# Never copy secrets, personal data or local state into an image.
+.env
+runs/
+examples/
+docs/
+.vibe-wise/
+.claude/
+CLAUDE.md
+tests/fixtures/Job_description_*.pdf
+
+# Rebuilt inside the image, or not needed there.
+.git/
+.github/
+.venv/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
