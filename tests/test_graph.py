@@ -111,6 +111,12 @@ def test_approve_builds_the_tailored_cv(tmp_path: Path) -> None:
     assert json.loads((result.run_dir / "review.json").read_text()) == [
         {"action": "approve", "comment": "", "edited_blocks": []}
     ]
+    report = result.report_path.read_text(encoding="utf-8")
+    assert report.startswith("# Tailoring report: Backend Engineer at Initech Ltd")
+    assert "## Fit: 64/100" in report
+    assert "### `exp.acme-corp.1`" in report
+    assert "1. Approve" in report
+    assert "PDF compilation was skipped" in report  # compile_pdf=False in these tests
 
 
 def test_reject_regenerates_with_feedback(tmp_path: Path) -> None:
