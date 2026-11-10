@@ -123,7 +123,7 @@ def tailor(
         f"{len(result.plan.edits)} edits approved after {len(result.review_history)} review(s)."
     )
     console.print(f"Fit {result.analysis.fit_score}/100, {len(result.analysis.gaps)} gap(s).")
-    console.print(f"Saved to {result.run_dir}")
+    console.print(f"Saved to {result.run_dir} (summary: {result.report_path.name})")
 
     original, tailored = result.original, result.tailored
     if original and tailored:

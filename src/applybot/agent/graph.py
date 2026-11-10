@@ -5,7 +5,7 @@
     validate --route_after_validate--> generate_edits | drop_failing | render_diff
     drop_failing -> render_diff -> human_review (interrupt: waits for the reviewer)
     human_review --route_after_review--> compile | recheck | generate_edits
-    recheck -> render_diff ;  compile -> END
+    recheck -> render_diff ;  compile -> write_report -> END
 
 Nodes are plain functions: they read the state and return only the keys they change.
 Routing functions only look at the state and name the next node; they never change it.
@@ -32,6 +32,7 @@ from applybot.tools.cv_index import Chunk, CVIndex, Embedder, FastEmbedder
 from applybot.tools.extract_job import JobPosting, extract_job
 from applybot.tools.fetch_job import fetch_job
 from applybot.tools.generate_edits import Edit, EditPlan, apply_edits, generate_edits
+from applybot.tools.report import build_report
 from applybot.tools.validate import (
     MAX_RETRIES,
     DroppedEdit,
@@ -230,13 +231,7 @@ class Nodes:
         """Only reachable after approval: write the tailored CV and compile it."""
         run_dir = Path(state["run_dir"])
         plan = state["plan"]
-        warnings = [p for p in state["problems"] if p.severity == "warning"]
-        validation = ValidatedPlan(
-            plan=plan,
-            attempts=state["attempts"],
-            dropped=state.get("dropped", []),
-            warnings=warnings,
-        )
+        validation = validated_plan(state)
         history = [r.model_dump() for r in state.get("review_history", [])]
         write_text(run_dir / "edits.json", plan.model_dump_json(indent=2))
         write_text(run_dir / "validation.json", validation.model_dump_json(indent=2))
@@ -245,6 +240,30 @@ class Nodes:
         tailored = compile_tex(run_dir / "tailored.tex") if self.compile_pdf else None
         return {"tailored": tailored}
 
+    def write_report(self, state: TailorState) -> TailorState:
+        """Always the last step, so even a failed compile leaves a report explaining it."""
+        report = build_report(
+            job=state["job"],
+            analysis=state["analysis"],
+            doc=state["doc"],
+            validation=validated_plan(state),
+            review_history=state.get("review_history", []),
+            original=state.get("original"),
+            tailored=state.get("tailored"),
+        )
+        write_text(Path(state["run_dir"]) / "report.md", report)
+        return {}
+
+
+def validated_plan(state: TailorState) -> ValidatedPlan:
+    """The final plan with how it got there: attempts, dropped edits, warnings."""
+    return ValidatedPlan(
+        plan=state["plan"],
+        attempts=state["attempts"],
+        dropped=state.get("dropped", []),
+        warnings=[p for p in state["problems"] if p.severity == "warning"],
+    )
+
 
 def build_graph(llm: LLMClient, compile_pdf: bool = True, embedder: Embedder | None = None) -> Any:
     nodes = Nodes(llm, compile_pdf, embedder or FastEmbedder())
@@ -252,7 +271,7 @@ def build_graph(llm: LLMClient, compile_pdf: bool = True, embedder: Embedder | N
     for name in (
         "load_cv", "index_cv", "fetch_job", "extract_job", "analyse_and_plan", "start_run",
         "generate_edits", "validate", "drop_failing", "render_diff", "human_review",
-        "recheck", "compile",
+        "recheck", "compile", "write_report",
     ):  # fmt: skip
         graph.add_node(name, getattr(nodes, name))
 
@@ -273,7 +292,8 @@ def build_graph(llm: LLMClient, compile_pdf: bool = True, embedder: Embedder | N
         "human_review", route_after_review, ["compile", "recheck", "generate_edits"]
     )
     graph.add_edge("recheck", "render_diff")
-    graph.add_edge("compile", END)
+    graph.add_edge("compile", "write_report")
+    graph.add_edge("write_report", END)
 
     allowed = [(cls.__module__, cls.__name__) for cls in CHECKPOINT_TYPES]
     serde = JsonPlusSerializer(allowed_msgpack_modules=allowed)

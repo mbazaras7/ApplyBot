@@ -36,41 +36,42 @@ jobs:
       - name: Test
         run: uv run pytest
 
-  # Slower check: really compile LaTeX with Tectonic. Runs only on pull requests into
-  # master, so every push still gets fast feedback from the job above.
-  compile:
+  # Slower check: build the Docker image and compile LaTeX inside it. Runs only on pull
+  # requests into master, so every push still gets fast feedback from the job above.
+  docker:
     if: github.event_name == 'pull_request' && github.base_ref == 'master'
     runs-on: ubuntu-latest
-    env:
-      TECTONIC_VERSION: "0.17.0"
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv and Python
-        uses: astral-sh/setup-uv@v6
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the test image
+        uses: docker/build-push-action@v6
         with:
-          python-version: "3.14"
-          enable-cache: true
+          context: .
+          target: test
+          tags: applybot:test
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Install Tectonic ${{ env.TECTONIC_VERSION }}
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          curl -fsSL "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40${TECTONIC_VERSION}/tectonic-${TECTONIC_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-            | tar -xz -C "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Compile tests inside the image
+        # REQUIRE_LATEX=1: fail, don't skip, if Tectonic is missing. The real-model test
+        # in test_cv_index.py runs too, proving the embedding model is baked in.
+        run: >
+          docker run --rm -e REQUIRE_LATEX=1 applybot:test
+          pytest -v tests/test_latex_compiler.py tests/test_pipeline.py tests/test_cv_index.py
 
-      - name: Cache Tectonic's TeX bundle
-        uses: actions/cache@v4
+      - name: Build the app image
+        uses: docker/build-push-action@v6
         with:
-          path: ~/.cache/Tectonic
-          key: tectonic-${{ env.TECTONIC_VERSION }}-${{ hashFiles('tests/fixtures/*.tex') }}
-          restore-keys: tectonic-${{ env.TECTONIC_VERSION }}-
+          context: .
+          target: app
+          tags: applybot:latest
+          load: true
+          cache-from: type=gha
 
-      - name: Install dependencies
-        run: uv sync --locked
-
-      - name: Compile tests
-        env:
-          REQUIRE_LATEX: "1"  # fail, don't skip, if Tectonic is missing
-        run: uv run pytest tests/test_latex_compiler.py -v
+      - name: The app starts
+        run: docker run --rm applybot:latest --help

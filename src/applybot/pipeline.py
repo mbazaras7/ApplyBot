@@ -35,6 +35,10 @@ class RunResult(BaseModel):
     def plan(self) -> EditPlan:
         return self.validation.plan
 
+    @property
+    def report_path(self) -> Path:
+        return self.run_dir / "report.md"
+
 
 def run_tailor(
     cv_path: Path,
