@@ -31,5 +31,8 @@ build/
 
 .claude
 CLAUDE.md
-docs
+# docs/ is private (milestone notes), except the architecture doc linked from the README.
+# "docs/*" (not "docs") so the exception below can re-include a file inside it.
+docs/*
+!docs/ARCHITECTURE.md
 .vibe-wise
