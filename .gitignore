@@ -1,8 +1,9 @@
 # Secrets
 .env
 
-# Run artifacts
+# Run artifacts and the history databases when kept in the project (Docker)
 runs/
+.applybot/
 
 # Personal data (kept local; a sanitized sample CV is added later for tests)
 examples/main.tex

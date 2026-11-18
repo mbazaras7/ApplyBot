@@ -1,6 +1,7 @@
 # Never copy secrets, personal data or local state into an image.
 .env
 runs/
+.applybot/
 examples/
 docs/
 .vibe-wise/

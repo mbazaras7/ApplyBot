@@ -43,6 +43,7 @@ class TailorState(TypedDict, total=False):
     facts_path: str | None
     out_root: str
     started: str  # timestamp for the run folder name
+    thread_id: str  # the checkpointer's key for this run, stored in the history row
 
     # Filled in along the way
     original_tex: str
@@ -52,6 +53,7 @@ class TailorState(TypedDict, total=False):
     job: JobPosting
     analysis: JobAnalysis
     run_dir: str
+    run_id: int | None  # the run's row in the history database, if one is kept
     original: CompileResult | None
 
     # Generate / validate loop

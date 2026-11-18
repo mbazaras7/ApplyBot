@@ -66,7 +66,8 @@ RUN --mount=type=cache,target=/home/applybot/.cache/uv,uid=1000,gid=1000 \
 FROM runtime AS app
 COPY --from=project --chown=applybot /app/.venv /app/.venv
 COPY --from=deps --chown=applybot /home/applybot/.cache /home/applybot/.cache
-ENV EDITOR=nano
+# Keep the run history in the mounted folder, so it outlives each --rm container.
+ENV EDITOR=nano \n    APPLYBOT_DATA_DIR=/work/.applybot
 WORKDIR /work
 ENTRYPOINT ["applybot"]
 CMD ["--help"]

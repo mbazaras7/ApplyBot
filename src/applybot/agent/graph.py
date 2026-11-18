@@ -7,17 +7,25 @@
     human_review --route_after_review--> compile | recheck | generate_edits
     recheck -> render_diff ;  compile -> write_report -> END
 
+With a HistoryStore, start_run creates the run's history row, render_diff marks it as
+awaiting review, and write_report stores the finished files in it.
+
 Nodes are plain functions: they read the state and return only the keys they change.
 Routing functions only look at the state and name the next node; they never change it.
 """
 
 import json
-from datetime import datetime
+import sqlite3
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
@@ -27,6 +35,8 @@ from applybot.latex.models import Block, CVDocument, Heading, Segment
 from applybot.latex.parser import parse, slugify
 from applybot.llm.client import LLMClient
 from applybot.review.diff import DiffEntry, ReviewRequest, build_diff
+from applybot.storage.history import HistoryStore
+from applybot.storage.models import Run, RunStatus
 from applybot.tools.analyse import JobAnalysis, RequirementFinding, analyse_and_plan
 from applybot.tools.cv_index import Chunk, CVIndex, Embedder, FastEmbedder
 from applybot.tools.extract_job import JobPosting, extract_job
@@ -56,6 +66,21 @@ CHECKPOINT_TYPES = (
 # Each review round is a few graph steps; LangGraph's default limit of 25 is too low
 # for several rounds of edit / reject.
 RECURSION_LIMIT = 200
+STARTED_FORMAT = "%Y%m%d-%H%M%S"
+
+
+def checkpoint_serde() -> JsonPlusSerializer:
+    allowed = [(cls.__module__, cls.__name__) for cls in CHECKPOINT_TYPES]
+    return JsonPlusSerializer(allowed_msgpack_modules=allowed)
+
+
+@contextmanager
+def sqlite_checkpointer(path: Path) -> Iterator[SqliteSaver]:
+    """A checkpointer that saves the graph state to a SQLite file, so a run paused at
+    review can be picked up again after the program exits. Closes the file afterwards."""
+    # check_same_thread=False: LangGraph may run steps on worker threads.
+    with closing(sqlite3.connect(path, check_same_thread=False)) as conn:
+        yield SqliteSaver(conn, serde=checkpoint_serde())
 
 
 def make_run_dir(out_root: Path, company: str | None, started: str) -> Path:
@@ -98,12 +123,28 @@ def route_after_review(state: TailorState) -> Literal["compile", "recheck", "gen
 
 
 class Nodes:
-    """The graph's steps. Held in a class so they share the LLM, embedder and settings."""
+    """The graph's steps. Held in a class so they share the LLM, embedder and settings.
 
-    def __init__(self, llm: LLMClient, compile_pdf: bool, embedder: Embedder) -> None:
+    With a `store`, the run is also recorded in the history database as it goes.
+    """
+
+    def __init__(
+        self,
+        llm: LLMClient,
+        compile_pdf: bool,
+        embedder: Embedder,
+        store: HistoryStore | None = None,
+    ) -> None:
         self.llm = llm
         self.compile_pdf = compile_pdf
         self.embedder = embedder
+        self.store = store
+
+    def record(self, state: TailorState, **fields: Any) -> None:
+        """Update this run's history row, if there is one."""
+        run_id = state.get("run_id")
+        if self.store is not None and run_id is not None:
+            self.store.update_run(run_id, **fields)
 
     def context(self, state: TailorState) -> ValidationContext:
         original = state.get("original")
@@ -146,7 +187,27 @@ class Nodes:
         write_text(run_dir / "job.json", state["job"].model_dump_json(indent=2))
         write_text(run_dir / "analysis.json", state["analysis"].model_dump_json(indent=2))
         original = compile_tex(run_dir / "original.tex") if self.compile_pdf else None
-        return {"run_dir": str(run_dir), "original": original, "attempts": 0}
+        update: TailorState = {"run_dir": str(run_dir), "original": original, "attempts": 0}
+        if self.store is not None:
+            job, analysis = state["job"], state["analysis"]
+            # The folder timestamp is local time; astimezone() attaches the local zone.
+            created = datetime.strptime(state["started"], STARTED_FORMAT).astimezone()
+            update["run_id"] = self.store.create_run(
+                Run(
+                    thread_id=state["thread_id"],
+                    created_at=created,
+                    updated_at=datetime.now(UTC),
+                    company=job.company,
+                    title=job.title,
+                    fit_score=analysis.fit_score,
+                    run_dir=str(run_dir),
+                    base_cv_tex=state["original_tex"],
+                    job_json=job.model_dump_json(indent=2),
+                    analysis_json=analysis.model_dump_json(indent=2),
+                    original_pages=original.page_count if original else None,
+                )
+            )
+        return update
 
     def generate_edits(self, state: TailorState) -> TailorState:
         comment = state.get("reviewer_comment")
@@ -193,6 +254,8 @@ class Nodes:
             can_approve=not state.get("review_errors"),
             analysis=state.get("analysis"),
         )
+        # Recorded here, not in human_review: that node re-runs from the top on resume.
+        self.record(state, status=RunStatus.awaiting_review)
         return {"review_request": request}
 
     def human_review(self, state: TailorState) -> TailorState:
@@ -237,6 +300,7 @@ class Nodes:
         write_text(run_dir / "validation.json", validation.model_dump_json(indent=2))
         write_text(run_dir / "review.json", json.dumps(history, indent=2))
         write_text(run_dir / "tailored.tex", apply_edits(state["doc"], plan))
+        self.record(state, status=RunStatus.running)
         tailored = compile_tex(run_dir / "tailored.tex") if self.compile_pdf else None
         return {"tailored": tailored}
 
@@ -251,7 +315,25 @@ class Nodes:
             original=state.get("original"),
             tailored=state.get("tailored"),
         )
-        write_text(Path(state["run_dir"]) / "report.md", report)
+        run_dir = Path(state["run_dir"])
+        write_text(run_dir / "report.md", report)
+
+        # Store the same files the run folder has, so the history doesn't need the folder.
+        tailored = state.get("tailored")
+        pdf = tailored.pdf_path if tailored and tailored.success else None
+        self.record(
+            state,
+            status=RunStatus.compile_failed
+            if tailored and not tailored.success
+            else RunStatus.completed,
+            edits_json=(run_dir / "edits.json").read_text(encoding="utf-8"),
+            validation_json=(run_dir / "validation.json").read_text(encoding="utf-8"),
+            review_json=(run_dir / "review.json").read_text(encoding="utf-8"),
+            tailored_tex=(run_dir / "tailored.tex").read_bytes().decode("utf-8"),
+            tailored_pdf=pdf.read_bytes() if pdf and pdf.exists() else None,
+            report_md=report,
+            tailored_pages=tailored.page_count if tailored else None,
+        )
         return {}
 
 
@@ -265,8 +347,15 @@ def validated_plan(state: TailorState) -> ValidatedPlan:
     )
 
 
-def build_graph(llm: LLMClient, compile_pdf: bool = True, embedder: Embedder | None = None) -> Any:
-    nodes = Nodes(llm, compile_pdf, embedder or FastEmbedder())
+def build_graph(
+    llm: LLMClient,
+    compile_pdf: bool = True,
+    embedder: Embedder | None = None,
+    store: HistoryStore | None = None,
+    checkpointer: BaseCheckpointSaver[Any] | None = None,
+) -> Any:
+    """Build the graph. Without a checkpointer the saved state lives only in memory."""
+    nodes = Nodes(llm, compile_pdf, embedder or FastEmbedder(), store)
     graph = StateGraph(TailorState)
     for name in (
         "load_cv", "index_cv", "fetch_job", "extract_job", "analyse_and_plan", "start_run",
@@ -295,10 +384,8 @@ def build_graph(llm: LLMClient, compile_pdf: bool = True, embedder: Embedder | N
     graph.add_edge("compile", "write_report")
     graph.add_edge("write_report", END)
 
-    allowed = [(cls.__module__, cls.__name__) for cls in CHECKPOINT_TYPES]
-    serde = JsonPlusSerializer(allowed_msgpack_modules=allowed)
-    return graph.compile(checkpointer=InMemorySaver(serde=serde))
+    return graph.compile(checkpointer=checkpointer or InMemorySaver(serde=checkpoint_serde()))
 
 
 def start_timestamp(now: datetime | None = None) -> str:
-    return f"{now or datetime.now():%Y%m%d-%H%M%S}"
+    return (now or datetime.now()).strftime(STARTED_FORMAT)
