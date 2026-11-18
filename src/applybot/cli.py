@@ -7,8 +7,10 @@ from typing import Annotated
 import anthropic
 import typer
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.markup import escape
 from rich.prompt import Prompt
+from rich.table import Table
 
 from applybot.agent.state import ReviewDecision
 from applybot.latex.compiler import CompilerNotFoundError
@@ -17,10 +19,15 @@ from applybot.llm.client import AnthropicClient, LLMConfigError, StructuredOutpu
 from applybot.pipeline import run_tailor
 from applybot.review.diff import ReviewRequest, render_review
 from applybot.review.editor import EditFileError, edits_to_text, open_in_editor, text_to_edits
+from applybot.storage.history import open_history
+from applybot.storage.models import Run, RunSummary
+from applybot.storage.paths import HISTORY_DB, data_dir
 from applybot.tools.fetch_job import FetchError
 from applybot.tools.generate_edits import EditError, EditPlan
 
 app = typer.Typer(help="Tailor a LaTeX CV to a job description.", no_args_is_help=True)
+history_app = typer.Typer(help="Browse past runs.")
+app.add_typer(history_app, name="history")
 console = Console()
 
 # Failures with a clear message for the user; anything else is a bug and shows a traceback.
@@ -76,7 +83,6 @@ def interactive_review(request: ReviewRequest) -> ReviewDecision:
 @app.callback()
 def main() -> None:
     """ApplyBot CLI."""
-    # An explicit callback keeps `tailor` as a named subcommand even while it is the only one.
 
 
 @app.command()
@@ -124,6 +130,10 @@ def tailor(
     )
     console.print(f"Fit {result.analysis.fit_score}/100, {len(result.analysis.gaps)} gap(s).")
     console.print(f"Saved to {result.run_dir} (summary: {result.report_path.name})")
+    if result.run_id is not None:
+        console.print(
+            f"Recorded as run {result.run_id} (see: applybot history show {result.run_id})"
+        )
 
     original, tailored = result.original, result.tailored
     if original and tailored:
@@ -133,3 +143,65 @@ def tailor(
             )
             raise typer.Exit(1)
         console.print(f"Pages: original {original.page_count} -> tailored {tailored.page_count}")
+
+
+def local_time(run: Run | RunSummary) -> str:
+    return f"{run.created_at.astimezone():%Y-%m-%d %H:%M}"
+
+
+@history_app.callback(invoke_without_command=True)
+def history(
+    ctx: typer.Context,
+    limit: Annotated[int, typer.Option(help="How many runs to show.")] = 20,
+) -> None:
+    """List past runs, newest first."""
+    if ctx.invoked_subcommand is not None:  # `history show ...` runs instead
+        return
+    store = open_history()
+    try:
+        runs = store.list_runs(limit)
+    finally:
+        store.close()
+    if not runs:
+        console.print(f"No runs yet. (History: {data_dir() / HISTORY_DB})")
+        return
+
+    table = Table("ID", "Date", "Company", "Role", "Fit", "Status")
+    for run in runs:
+        table.add_row(
+            str(run.id),
+            local_time(run),
+            escape(run.company or "unknown"),
+            escape(run.title or "unknown"),
+            "" if run.fit_score is None else str(run.fit_score),
+            run.status.value.replace("_", " "),
+        )
+    console.print(table)
+
+
+@history_app.command("show")
+def history_show(run_id: Annotated[int, typer.Argument(help="The run's ID.")]) -> None:
+    """Show one run: its details and report."""
+    store = open_history()
+    try:
+        run = store.get_run(run_id)
+    finally:
+        store.close()
+    if run is None:
+        console.print(f"[red]Error:[/red] no run {run_id}.")
+        raise typer.Exit(1)
+
+    console.print(
+        f"[bold]Run {run.id}[/bold]: {escape(run.title or 'Unknown role')} at "
+        f"{escape(run.company or 'unknown company')}"
+    )
+    console.print(f"Started {local_time(run)}, status: {run.status.value.replace('_', ' ')}")
+    if run.fit_score is not None:
+        console.print(f"Fit {run.fit_score}/100")
+    if run.error:
+        console.print(f"[red]Error:[/red] {escape(run.error)}")
+    pdf = f"{len(run.tailored_pdf) // 1024} KB" if run.tailored_pdf else "none"
+    console.print(f"Folder: {run.run_dir}  (tailored PDF stored: {pdf})")
+    if run.report_md:
+        console.rule("Report")
+        console.print(Markdown(run.report_md))
