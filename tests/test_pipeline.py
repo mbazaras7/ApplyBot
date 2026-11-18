@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 from fakes import GOOD_ACME, JOB_DETAILS, FakeEmbedder, ScriptedLLM, ScriptedReviewer, approve
 
+from applybot.agent.state import ReviewDecision
 from applybot.pipeline import run_tailor
+from applybot.storage.history import HistoryStore
+from applybot.storage.models import RunStatus
+from applybot.storage.paths import data_dir
 
 SAMPLE = Path(__file__).parent / "fixtures" / "sample_cv.tex"
 NOW = datetime(2026, 11, 7, 15, 30, 0)
@@ -87,3 +91,71 @@ def test_run_compiles_both_versions(tmp_path: Path) -> None:
     assert result.tailored.success, result.tailored.log
     assert result.original.page_count == result.tailored.page_count == 1
     assert (result.run_dir / "tailored.pdf").exists()
+
+    # The tailored PDF is also stored in the history database.
+    store = HistoryStore(data_dir() / "applybot.db")
+    assert result.run_id is not None
+    run = store.get_run(result.run_id)
+    store.close()
+    assert run is not None and run.status == RunStatus.completed
+    assert run.tailored_pdf == (result.run_dir / "tailored.pdf").read_bytes()
+    assert run.original_pages == run.tailored_pages == 1
+
+
+def test_run_is_recorded_in_history(tmp_path: Path, data_dir: Path) -> None:
+    result = run_tailor(
+        SAMPLE, ScriptedLLM([[GOOD_ACME]]), ScriptedReviewer([approve]),
+        job_text="Backend Engineer at Initech", out_root=tmp_path, now=NOW,
+        compile_pdf=False, embedder=FakeEmbedder(),
+    )  # fmt: skip
+    assert result.run_id is not None
+    assert (data_dir / "applybot.db").exists() and (data_dir / "checkpoints.db").exists()
+
+    store = HistoryStore(data_dir / "applybot.db")
+    run = store.get_run(result.run_id)
+    store.close()
+    assert run is not None
+    assert run.status == RunStatus.completed
+    assert run.created_at.astimezone().replace(tzinfo=None) == NOW
+    assert (run.company, run.title, run.fit_score) == ("Initech Ltd", "Backend Engineer", 64)
+    assert run.run_dir == str(result.run_dir)
+    # The database holds the same files as the run folder.
+    assert run.base_cv_tex.encode("utf-8") == SAMPLE.read_bytes()
+    for column, name in [
+        (run.job_json, "job.json"), (run.edits_json, "edits.json"),
+        (run.validation_json, "validation.json"), (run.review_json, "review.json"),
+        (run.report_md, "report.md"),
+    ]:  # fmt: skip
+        assert column == (result.run_dir / name).read_text(encoding="utf-8")
+    assert run.tailored_tex is not None
+    assert run.tailored_tex.encode("utf-8") == (result.run_dir / "tailored.tex").read_bytes()
+    assert run.tailored_pdf is None  # compiling was off
+
+
+def test_crash_after_the_run_starts_is_recorded(tmp_path: Path, data_dir: Path) -> None:
+    def crash(request: object) -> ReviewDecision:
+        raise RuntimeError("reviewer went away")
+
+    with pytest.raises(RuntimeError):
+        run_tailor(
+            SAMPLE, ScriptedLLM([[GOOD_ACME]]), crash, job_text="A job",
+            out_root=tmp_path, now=NOW, compile_pdf=False, embedder=FakeEmbedder(),
+        )  # fmt: skip
+    store = HistoryStore(data_dir / "applybot.db")
+    [summary] = store.list_runs()
+    run = store.get_run(summary.id)
+    store.close()
+    assert run is not None
+    assert run.status == RunStatus.failed
+    assert run.error == "reviewer went away"
+
+
+def test_crash_before_the_run_starts_leaves_no_row(tmp_path: Path, data_dir: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        run_tailor(
+            tmp_path / "missing.tex", ScriptedLLM([]), ScriptedReviewer([]), job_text="A job",
+            out_root=tmp_path, compile_pdf=False, embedder=FakeEmbedder(),
+        )  # fmt: skip
+    store = HistoryStore(data_dir / "applybot.db")
+    assert store.list_runs() == []
+    store.close()

@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,8 @@ from applybot.cli import app
 from applybot.pipeline import RunResult
 from applybot.review.diff import ReviewRequest
 from applybot.review.editor import EditFileError
+from applybot.storage.history import HistoryStore
+from applybot.storage.models import Run, RunStatus
 from applybot.tools.analyse import JobAnalysis
 from applybot.tools.extract_job import JobPosting
 from applybot.tools.generate_edits import Edit, EditError, EditPlan
@@ -214,3 +217,63 @@ def test_tailor_rejects_two_job_sources(cv_file: Path) -> None:
 def test_tailor_rejects_no_job_source(cv_file: Path) -> None:
     result = runner.invoke(app, ["tailor", str(cv_file)])
     assert result.exit_code == 2
+
+
+def add_run(data_dir: Path, **fields: Any) -> int:
+    store = HistoryStore(data_dir / "applybot.db")
+    when = datetime(2026, 11, 18, 9, 30, tzinfo=UTC)
+    run = Run(
+        thread_id=str(len(store.list_runs())),
+        created_at=when,
+        updated_at=when,
+        run_dir="runs/x",
+        base_cv_tex="",
+        job_json="{}",
+        analysis_json="{}",
+        **fields,
+    )
+    run_id = store.create_run(run)
+    store.close()
+    return run_id
+
+
+def test_history_empty(data_dir: Path) -> None:
+    result = runner.invoke(app, ["history"])
+    assert result.exit_code == 0
+    assert "No runs yet" in result.output
+
+
+def test_history_lists_runs(data_dir: Path) -> None:
+    add_run(data_dir, company="Initech", title="Backend Engineer", fit_score=72,
+            status=RunStatus.completed)  # fmt: skip
+    add_run(data_dir, company="Globex", title="[Senior] Dev", status=RunStatus.awaiting_review)
+    result = runner.invoke(app, ["history"], terminal_width=200)
+    assert result.exit_code == 0
+    for text in ["Initech", "Backend Engineer", "72", "completed", "Globex", "[Senior] Dev",
+                 "awaiting review"]:  # fmt: skip
+        assert text in result.output
+    assert result.output.index("Globex") < result.output.index("Initech")  # newest first
+
+
+def test_history_show(data_dir: Path) -> None:
+    run_id = add_run(data_dir, company="Initech", title="Backend Engineer", fit_score=72,
+                     status=RunStatus.completed, report_md="# Tailoring report\n\nAll good.",
+                     tailored_pdf=b"x" * 4096)  # fmt: skip
+    result = runner.invoke(app, ["history", "show", str(run_id)], terminal_width=200)
+    assert result.exit_code == 0
+    for text in ["Backend Engineer at Initech", "Fit 72/100", "completed", "4 KB",
+                 "Tailoring report", "All good."]:  # fmt: skip
+        assert text in result.output
+
+
+def test_history_show_failed_run(data_dir: Path) -> None:
+    run_id = add_run(data_dir, status=RunStatus.failed, error="API timed out")
+    result = runner.invoke(app, ["history", "show", str(run_id)], terminal_width=200)
+    assert result.exit_code == 0
+    assert "failed" in result.output and "API timed out" in result.output
+
+
+def test_history_show_missing(data_dir: Path) -> None:
+    result = runner.invoke(app, ["history", "show", "7"])
+    assert result.exit_code == 1
+    assert "no run 7" in result.output
