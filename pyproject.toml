@@ -5,7 +5,9 @@ description = "Tailor a LaTeX CV to a job description, with human review."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "alembic>=1.20.1",
     "anthropic>=2.6.0",
+    "fastapi>=0.165.0",
     "fastembed>=0.9.1",
     "httpx>=0.28.1",
     "langgraph>=1.2.20",
@@ -14,9 +16,11 @@ dependencies = [
     "pydantic>=2",
     "pypdf>=4",
     "python-dotenv>=1.2.4",
+    "python-multipart>=0.0.34",
     "sqlmodel>=0.0.50",
     "trafilatura>=2.3.1",
     "typer>=0.12",
+    "uvicorn>=0.54.0",
 ]
 
 [project.scripts]
