@@ -1,13 +1,15 @@
 """Turn a job description source (URL, file or stdin) into plain text."""
 
+import io
 import re
 import sys
 from pathlib import Path
-from typing import TextIO
+from typing import BinaryIO, TextIO
 
 import httpx
 import trafilatura
 from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
 USER_AGENT = "ApplyBot/0.1 (CV tailoring CLI)"
 TIMEOUT_SECONDS = 20.0
@@ -50,9 +52,34 @@ def collapse_spaces(text: str) -> str:
     return "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines())
 
 
-def pdf_to_text(path: Path) -> str:
-    pages = PdfReader(path).pages
+def pdf_to_text(source: Path | BinaryIO) -> str:
+    pages = PdfReader(source).pages
     return collapse_spaces("\n".join(page.extract_text() or "" for page in pages))
+
+
+def file_to_text(name: str, data: bytes) -> str:
+    """The job text of a file, read by its extension: .pdf, .html/.htm, or plain text.
+
+    Takes the bytes, so the API can read an upload without saving it first.
+    """
+    suffix = Path(name).suffix.lower()
+    try:
+        if suffix == ".pdf":
+            text = pdf_to_text(io.BytesIO(data))
+        elif suffix in (".html", ".htm"):
+            text = html_to_text(data.decode("utf-8", errors="replace"))
+        else:
+            text = data.decode("utf-8", errors="replace")
+    except PdfReadError as error:
+        raise FetchError(f"Could not read {name} as a PDF: {error}") from error
+    return non_empty(text, name)
+
+
+def non_empty(text: str, source: str) -> str:
+    text = text.replace("\r\n", "\n").strip()  # Windows line endings add nothing to a job
+    if not text:
+        raise FetchError(f"The job description from '{source}' is empty.")
+    return text
 
 
 def fetch_job(
@@ -75,15 +102,5 @@ def fetch_job(
         path = Path(source)
         if not path.is_file():
             raise FetchError(f"No such file: {source}")
-        suffix = path.suffix.lower()
-        if suffix == ".pdf":
-            text = pdf_to_text(path)
-        elif suffix in (".html", ".htm"):
-            text = html_to_text(path.read_text(encoding="utf-8", errors="replace"))
-        else:
-            text = path.read_text(encoding="utf-8", errors="replace")
-
-    text = text.strip()
-    if not text:
-        raise FetchError(f"The job description from '{source}' is empty.")
-    return text
+        return file_to_text(path.name, path.read_bytes())
+    return non_empty(text, source)
