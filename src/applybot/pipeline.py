@@ -1,6 +1,5 @@
 """Run the tailoring graph end to end, handing each review pause to a reviewer."""
 
-import uuid
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -9,18 +8,13 @@ from typing import Any
 from langgraph.types import Command
 from pydantic import BaseModel
 
-from applybot.agent.graph import (
-    RECURSION_LIMIT,
-    build_graph,
-    sqlite_checkpointer,
-    start_timestamp,
-)
-from applybot.agent.state import ReviewDecision, ReviewRound, TailorState
+from applybot.agent.graph import build_graph, sqlite_checkpointer
+from applybot.agent.state import ReviewDecision, ReviewRound
 from applybot.latex.compiler import CompileResult
 from applybot.llm.client import LLMClient
 from applybot.review.diff import ReviewRequest
+from applybot.service.runs import RunInputs, advance, record_failure, submit_run
 from applybot.storage.history import HistoryStore
-from applybot.storage.models import RunStatus
 from applybot.storage.paths import CHECKPOINT_DB, HISTORY_DB, data_dir
 from applybot.tools.analyse import JobAnalysis
 from applybot.tools.cv_index import Embedder
@@ -58,6 +52,7 @@ def run_tailor(
     job_source: str | None = None,
     job_text: str | None = None,
     facts_path: Path | None = None,
+    custom_prompt: str = "",
     out_root: Path = Path("runs"),
     now: datetime | None = None,
     compile_pdf: bool = True,
@@ -71,50 +66,40 @@ def run_tailor(
 
     The run is recorded in the history database, and the graph's state is saved to the
     checkpoint database after every step, both in `data_folder` (default: the user's
-    data folder).
+    data folder). The API runs the same steps in the background (service/runs.py).
     """
+    inputs = RunInputs(
+        cv_tex=cv_path.read_bytes().decode("utf-8"),
+        facts=facts_path.read_text(encoding="utf-8") if facts_path else "",
+        custom_prompt=custom_prompt,
+        job_source=job_source,
+        job_text=job_text,
+    )
     if (job_source is None) == (job_text is None):
         raise ValueError("Pass exactly one of job_source or job_text.")
-
-    # The checkpointer keeps one saved state per thread; each run gets its own thread.
-    thread_id = str(uuid.uuid4())
-    initial: TailorState = {
-        "thread_id": thread_id,
-        "cv_path": str(cv_path),
-        "job_source": job_source,
-        "job_text": job_text,
-        "facts_path": str(facts_path) if facts_path else None,
-        "out_root": str(out_root),
-        "started": start_timestamp(now),
-    }
     folder = data_folder or data_dir()
     store = HistoryStore(folder / HISTORY_DB)
     try:
-        with sqlite_checkpointer(folder / CHECKPOINT_DB) as checkpointer:
-            graph = build_graph(llm, compile_pdf, embedder, store=store, checkpointer=checkpointer)
-            return drive(graph, store, reviewer, initial)
+        run_id, initial = submit_run(store, inputs, out_root, now)
+        thread_id = initial["thread_id"]
+        try:
+            with sqlite_checkpointer(folder / CHECKPOINT_DB) as checkpointer:
+                graph = build_graph(
+                    llm, compile_pdf, embedder, store=store, checkpointer=checkpointer
+                )
+                progress = advance(graph, store, run_id, thread_id, initial)
+                while progress.review is not None:
+                    decision = reviewer(progress.review)
+                    progress = advance(graph, store, run_id, thread_id, Command(resume=decision))
+        except BaseException as error:  # incl. Ctrl+C: a run left "running" would be wrong
+            record_failure(store, run_id, error)
+            raise
     finally:
         store.close()
+    return result_of(run_id, progress.values)
 
 
-def drive(graph: Any, store: HistoryStore, reviewer: Reviewer, initial: TailorState) -> RunResult:
-    """Invoke the graph, answer each review pause, and collect the result."""
-    config = {
-        "configurable": {"thread_id": initial["thread_id"]},
-        "recursion_limit": RECURSION_LIMIT,
-    }
-    try:
-        state = graph.invoke(initial, config)
-        while "__interrupt__" in state:  # paused at human_review
-            request = state["__interrupt__"][0].value
-            state = graph.invoke(Command(resume=reviewer(request)), config)
-    except Exception as error:
-        # The last saved state says whether a history row was created before the error.
-        run_id = graph.get_state(config).values.get("run_id")
-        if run_id is not None:
-            store.update_run(run_id, status=RunStatus.failed, error=str(error) or repr(error))
-        raise
-
+def result_of(run_id: int, state: dict[str, Any]) -> RunResult:
     validation = ValidatedPlan(
         plan=state["plan"],
         attempts=state["attempts"],
@@ -122,7 +107,7 @@ def drive(graph: Any, store: HistoryStore, reviewer: Reviewer, initial: TailorSt
         warnings=[p for p in state["problems"] if p.severity == "warning"],
     )
     return RunResult(
-        run_id=state.get("run_id"),
+        run_id=run_id,
         run_dir=Path(state["run_dir"]),
         job=state["job"],
         analysis=state["analysis"],

@@ -36,24 +36,24 @@ class TailorState(TypedDict, total=False):
     A node returns only the keys it changed; LangGraph merges them into the state.
     """
 
-    # Inputs
-    cv_path: str
-    job_source: str | None
-    job_text: str | None
-    facts_path: str | None
+    # Inputs, all as text: the graph never reads input files itself
+    cv_tex: str
+    facts: str
+    custom_prompt: str  # the user's preferences, added below the generation rules
+    job_source: str | None  # URL or file path, fetched by fetch_job
+    job_text: str | None  # or the job's text, given directly
     out_root: str
     started: str  # timestamp for the run folder name
     thread_id: str  # the checkpointer's key for this run, stored in the history row
+    run_id: int | None  # the run's row in the history database, if one is kept
 
     # Filled in along the way
     original_tex: str
     doc: CVDocument
-    facts: str
     index: CVIndex
     job: JobPosting
     analysis: JobAnalysis
     run_dir: str
-    run_id: int | None  # the run's row in the history database, if one is kept
     original: CompileResult | None
 
     # Generate / validate loop
