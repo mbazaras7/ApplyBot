@@ -7,7 +7,8 @@ from sqlmodel import Field, SQLModel
 
 
 class RunStatus(StrEnum):
-    running = "running"  # generating and validating edits
+    queued = "queued"  # submitted, waiting for the worker
+    running = "running"  # a step is running (see `step`)
     awaiting_review = "awaiting_review"  # paused at the review step (resumable)
     completed = "completed"  # approved, compiled (or compiling was off) and reported
     compile_failed = "compile_failed"  # approved, but the tailored CV didn't compile
@@ -26,18 +27,22 @@ class Run(SQLModel, table=True):
     thread_id: str = Field(unique=True, index=True)  # the checkpointer's key for this run
     created_at: datetime = Field(index=True)
     updated_at: datetime
-    status: RunStatus = RunStatus.running
+    status: RunStatus = RunStatus.queued
+    step: str | None = None  # what's happening now, e.g. "Analysing the fit"
     error: str | None = None
 
+    # Filled in once the job is read and analysed (start_run)
     company: str | None = None
     title: str | None = None
     fit_score: int | None = None
-    run_dir: str
+    run_dir: str | None = None
+    job_json: str | None = None
+    analysis_json: str | None = None
 
-    # Inputs
+    # Inputs, known when the run is submitted
     base_cv_tex: str
-    job_json: str
-    analysis_json: str
+    facts_md: str = ""
+    custom_prompt: str = ""
 
     # Outputs, filled in when the run finishes
     edits_json: str | None = None
@@ -58,6 +63,7 @@ class RunSummary(SQLModel):
     thread_id: str
     created_at: datetime
     status: RunStatus
+    step: str | None
     company: str | None
     title: str | None
     fit_score: int | None

@@ -101,6 +101,9 @@ def tailor(
         Path | None,
         typer.Option(exists=True, dir_okay=False, help="Optional facts.md with extra true facts."),
     ] = None,
+    prompt: Annotated[
+        str, typer.Option(help="Your own instructions, added below the built-in rules.")
+    ] = "",
     out_dir: Annotated[Path, typer.Option(help="Where run artifacts are saved.")] = Path("runs"),
 ) -> None:
     """Tailor CV_PATH to a job description and compile the result."""
@@ -117,6 +120,7 @@ def tailor(
             job_source=job_source,
             job_text=job_text,
             facts_path=facts,
+            custom_prompt=prompt,
             out_root=out_dir,
         )
     except EXPECTED_ERRORS as error:
@@ -143,6 +147,28 @@ def tailor(
             )
             raise typer.Exit(1)
         console.print(f"Pages: original {original.page_count} -> tailored {tailored.page_count}")
+
+
+@app.command()
+def serve(
+    port: Annotated[int, typer.Option(help="Port on 127.0.0.1 to listen on.")] = 8765,
+    out_dir: Annotated[
+        Path | None,
+        typer.Option(help="Where run folders are saved (default: in the data folder)."),
+    ] = None,
+) -> None:
+    """Start the local API that the desktop app talks to."""
+    # Imported here so the other commands don't pay for loading the web server.
+    import uvicorn
+
+    from applybot.api.app import create_app
+    from applybot.service.runs import RunManager
+
+    folder = data_dir()
+    manager = RunManager(folder, AnthropicClient, out_root=out_dir or folder / "runs")
+    console.print(f"ApplyBot API on http://127.0.0.1:{port} (docs at /docs). Ctrl+C to stop.")
+    # 127.0.0.1 only: the API is for programs on this computer, never the network.
+    uvicorn.run(create_app(manager), host="127.0.0.1", port=port)
 
 
 def local_time(run: Run | RunSummary) -> str:

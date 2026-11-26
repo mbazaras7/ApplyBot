@@ -7,8 +7,9 @@
     human_review --route_after_review--> compile | recheck | generate_edits
     recheck -> render_diff ;  compile -> write_report -> END
 
-With a HistoryStore, start_run creates the run's history row, render_diff marks it as
-awaiting review, and write_report stores the finished files in it.
+With a HistoryStore and a `run_id` (the row is created when the run is submitted, see
+service/runs.py), start_run fills in the job and analysis, render_diff marks the run as
+awaiting review, and write_report stores the finished files.
 
 Nodes are plain functions: they read the state and return only the keys they change.
 Routing functions only look at the state and name the next node; they never change it.
@@ -18,7 +19,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -36,7 +37,7 @@ from applybot.latex.parser import parse, slugify
 from applybot.llm.client import LLMClient
 from applybot.review.diff import DiffEntry, ReviewRequest, build_diff
 from applybot.storage.history import HistoryStore
-from applybot.storage.models import Run, RunStatus
+from applybot.storage.models import RunStatus
 from applybot.tools.analyse import JobAnalysis, RequirementFinding, analyse_and_plan
 from applybot.tools.cv_index import Chunk, CVIndex, Embedder, FastEmbedder
 from applybot.tools.extract_job import JobPosting, extract_job
@@ -53,6 +54,7 @@ from applybot.tools.validate import (
     drop_failing_edits,
     errors_of,
     format_problems,
+    soften,
     validate,
 )
 
@@ -67,6 +69,24 @@ CHECKPOINT_TYPES = (
 # for several rounds of edit / reject.
 RECURSION_LIMIT = 200
 STARTED_FORMAT = "%Y%m%d-%H%M%S"
+
+# What each step is doing, in words, for progress shown to the user.
+STEP_LABELS = {
+    "load_cv": "Reading your CV",
+    "index_cv": "Indexing your CV",
+    "fetch_job": "Fetching the job",
+    "extract_job": "Reading the job",
+    "analyse_and_plan": "Analysing the fit",
+    "start_run": "Preparing the run",
+    "generate_edits": "Writing edits",
+    "validate": "Checking the edits",
+    "drop_failing": "Dropping edits that failed",
+    "render_diff": "Preparing the review",
+    "human_review": "Waiting for review",
+    "recheck": "Checking your edits",
+    "compile": "Compiling the PDF",
+    "write_report": "Writing the report",
+}
 
 
 def checkpoint_serde() -> JsonPlusSerializer:
@@ -159,10 +179,8 @@ class Nodes:
         return compile_text if self.compile_pdf else None
 
     def load_cv(self, state: TailorState) -> TailorState:
-        original_tex = Path(state["cv_path"]).read_bytes().decode("utf-8")
-        facts_path = state.get("facts_path")
-        facts = Path(facts_path).read_text(encoding="utf-8") if facts_path else ""
-        return {"original_tex": original_tex, "doc": parse(original_tex), "facts": facts}
+        original_tex = state["cv_tex"]
+        return {"original_tex": original_tex, "doc": parse(original_tex)}
 
     def index_cv(self, state: TailorState) -> TailorState:
         return {"index": CVIndex.build(state["doc"], self.embedder)}
@@ -187,27 +205,18 @@ class Nodes:
         write_text(run_dir / "job.json", state["job"].model_dump_json(indent=2))
         write_text(run_dir / "analysis.json", state["analysis"].model_dump_json(indent=2))
         original = compile_tex(run_dir / "original.tex") if self.compile_pdf else None
-        update: TailorState = {"run_dir": str(run_dir), "original": original, "attempts": 0}
-        if self.store is not None:
-            job, analysis = state["job"], state["analysis"]
-            # The folder timestamp is local time; astimezone() attaches the local zone.
-            created = datetime.strptime(state["started"], STARTED_FORMAT).astimezone()
-            update["run_id"] = self.store.create_run(
-                Run(
-                    thread_id=state["thread_id"],
-                    created_at=created,
-                    updated_at=datetime.now(UTC),
-                    company=job.company,
-                    title=job.title,
-                    fit_score=analysis.fit_score,
-                    run_dir=str(run_dir),
-                    base_cv_tex=state["original_tex"],
-                    job_json=job.model_dump_json(indent=2),
-                    analysis_json=analysis.model_dump_json(indent=2),
-                    original_pages=original.page_count if original else None,
-                )
-            )
-        return update
+        job, analysis = state["job"], state["analysis"]
+        self.record(
+            state,
+            company=job.company,
+            title=job.title,
+            fit_score=analysis.fit_score,
+            run_dir=str(run_dir),
+            job_json=job.model_dump_json(indent=2),
+            analysis_json=analysis.model_dump_json(indent=2),
+            original_pages=original.page_count if original else None,
+        )
+        return {"run_dir": str(run_dir), "original": original, "attempts": 0}
 
     def generate_edits(self, state: TailorState) -> TailorState:
         comment = state.get("reviewer_comment")
@@ -221,6 +230,7 @@ class Nodes:
             errors=errors,
             reviewer_comment=comment,
             analysis=state.get("analysis"),
+            preferences=state.get("custom_prompt", ""),
         )
         return {
             "plan": plan,
@@ -285,9 +295,13 @@ class Nodes:
         return update
 
     def recheck(self, state: TailorState) -> TailorState:
-        """Validate the reviewer's hand-edited plan (no retries: a person wrote it)."""
+        """Validate the reviewer's hand-edited plan (no retries: a person wrote it).
+
+        The reviewer is the CV's owner, so truthfulness checks only warn here; structural
+        problems still block approval.
+        """
         plan = state["decision"].plan or state["plan"]
-        problems = validate(self.context(state), plan, self.compile_fn())
+        problems = soften(validate(self.context(state), plan, self.compile_fn()))
         return {"plan": plan, "problems": problems, "review_errors": errors_of(problems)}
 
     def compile(self, state: TailorState) -> TailorState:

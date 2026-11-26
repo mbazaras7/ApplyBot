@@ -3,7 +3,8 @@
 import re
 import zlib
 from collections.abc import Callable
-from typing import Any, TypeVar
+from concurrent.futures import Executor, Future
+from typing import Any, ParamSpec, TypeVar
 
 from pydantic import BaseModel
 
@@ -12,6 +13,8 @@ from applybot.llm.client import Tool
 from applybot.review.diff import ReviewRequest
 
 T = TypeVar("T", bound=BaseModel)
+R = TypeVar("R")
+P = ParamSpec("P")
 
 JOB_DETAILS: dict[str, Any] = {
     "title": "Backend Engineer",
@@ -91,12 +94,14 @@ class ScriptedLLM:
     def __init__(self, plans: list[list[dict[str, Any]]]) -> None:
         self.plans = plans
         self.edit_prompts: list[str] = []
+        self.edit_systems: list[str] = []
         self.tool_loops: list[dict[str, Any]] = []
 
     def structured(self, *, system: str, user: str, schema: type[T]) -> T:
         if schema.__name__ == "JobDetails":
             return schema.model_validate(JOB_DETAILS)
         self.edit_prompts.append(user)
+        self.edit_systems.append(system)
         return schema.model_validate({"edits": self.plans.pop(0)})
 
     def tool_loop(
@@ -137,3 +142,29 @@ def edit_text(block_id: str, new_text: str) -> Callable[[ReviewRequest], ReviewD
         return ReviewDecision(action="edit", plan=request.plan.model_copy(update={"edits": edits}))
 
     return step
+
+
+class InlineExecutor(Executor):
+    """Runs background work immediately, so a test sees its result right away."""
+
+    def submit(self, fn: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
+        future: Future[R] = Future()
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except BaseException as error:
+            future.set_exception(error)
+        return future
+
+
+class ManualExecutor(Executor):
+    """Holds background work until the test runs it, to see what's still queued."""
+
+    def __init__(self) -> None:
+        self.waiting: list[Callable[[], object]] = []
+
+    def submit(self, fn: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
+        self.waiting.append(lambda: fn(*args, **kwargs))
+        return Future()
+
+    def run_next(self) -> None:
+        self.waiting.pop(0)()

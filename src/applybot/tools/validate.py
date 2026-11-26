@@ -452,6 +452,20 @@ def validate(
     return problems
 
 
+# Checks of what the CV claims. On edits the CV's owner made by hand these only warn: the
+# owner is the author and may add a true skill or reword freely. Structural checks
+# (braces, escaping, IDs, reparse, compile) keep blocking, since they'd break the CV.
+TRUTHFULNESS_RULES = frozenset({"new_skill", "numbers", "length", "skills_reorder", "pages"})
+
+
+def soften(problems: list[Problem]) -> list[Problem]:
+    """Turn truthfulness errors into warnings, for a plan the reviewer edited by hand."""
+    return [
+        p.model_copy(update={"severity": "warning"}) if p.rule in TRUTHFULNESS_RULES else p
+        for p in problems
+    ]
+
+
 def errors_of(problems: list[Problem]) -> list[Problem]:
     return [p for p in problems if p.severity == "error"]
 

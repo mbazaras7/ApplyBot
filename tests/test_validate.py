@@ -10,6 +10,7 @@ from applybot.latex.parser import parse
 from applybot.latex.renderer import render
 from applybot.tools.generate_edits import Edit, EditPlan
 from applybot.tools.validate import (
+    TRUTHFULNESS_RULES,
     CompileFn,
     Problem,
     ValidationContext,
@@ -18,6 +19,7 @@ from applybot.tools.validate import (
     check_reparse,
     drop_failing_edits,
     errors_of,
+    soften,
     split_items,
     stem,
     validate,
@@ -376,3 +378,17 @@ def test_reparse_backstop(ctx: ValidationContext) -> None:
     assert [p.message for p in check_reparse(ctx, plan, tampered)] == [
         "a block that wasn't edited changed"
     ]
+
+
+def test_soften_turns_only_truthfulness_errors_into_warnings() -> None:
+    problems = [
+        Problem(block_id="a", rule=rule, message=rule)
+        for rule in ("new_skill", "numbers", "length", "skills_reorder", "pages", "braces",
+                     "escaping", "structure", "ids", "reparse", "compile")
+    ]  # fmt: skip
+    softened = {p.rule: p.severity for p in soften(problems)}
+    assert {r for r, s in softened.items() if s == "warning"} == TRUTHFULNESS_RULES
+    assert {r for r, s in softened.items() if s == "error"} == {
+        "braces", "escaping", "structure", "ids", "reparse", "compile"
+    }  # fmt: skip
+    assert all(p.severity == "error" for p in problems)  # the originals are unchanged
