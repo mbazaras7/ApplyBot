@@ -152,3 +152,18 @@ def test_all_problems_are_reported_together(tex: str) -> None:
         apply_edits(parse(tex), plan)
     assert "unknown block ID" in str(info.value)
     assert "read-only" in str(info.value)
+
+
+def test_preferences_come_after_the_rules(tex: str) -> None:
+    llm = FakeLLM({"edits": []})
+    generate_edits(parse(tex), JOB, llm, preferences="  Keep a formal tone.  ")
+    system = llm.requests[0]["system"]
+    assert system.startswith(GENERATION_RULES)
+    assert system.endswith("<user_preferences>\nKeep a formal tone.\n</user_preferences>")
+    assert "the rules above win" in system
+
+
+def test_blank_preferences_leave_the_rules_alone(tex: str) -> None:
+    llm = FakeLLM({"edits": []})
+    generate_edits(parse(tex), JOB, llm, preferences="   ")
+    assert llm.requests[0]["system"] == GENERATION_RULES

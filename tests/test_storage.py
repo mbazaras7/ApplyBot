@@ -57,7 +57,7 @@ def test_create_and_get(store: HistoryStore) -> None:
     run = store.get_run(run_id)
     assert run is not None
     assert (run.thread_id, run.company, run.fit_score) == ("t1", "Initech", 72)
-    assert run.status == RunStatus.running
+    assert run.status == RunStatus.queued
     assert run.created_at == T0  # comes back timezone-aware, in UTC
     assert store.get_run(run_id + 1) is None
 
@@ -122,7 +122,7 @@ def test_list_never_reads_the_stored_files(store: HistoryStore) -> None:
 
     [summary] = store.list_runs()
     assert (summary.id, summary.company, summary.fit_score) == (run_id, "Initech", 72)
-    assert summary.status == RunStatus.running
+    assert summary.status == RunStatus.queued
     assert summary.created_at == T0
     [select_sql] = statements
     for column in ("tailored_pdf", "report_md", "base_cv_tex", "tailored_tex"):

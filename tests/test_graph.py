@@ -29,7 +29,7 @@ def run_to_review(llm: ScriptedLLM, out_root: Path) -> tuple[Any, dict[str, Any]
     graph = build_graph(llm, compile_pdf=False, embedder=FakeEmbedder())
     config = {"configurable": {"thread_id": str(uuid.uuid4())}, "recursion_limit": RECURSION_LIMIT}
     initial = {
-        "cv_path": str(SAMPLE),
+        "cv_tex": SAMPLE.read_bytes().decode("utf-8"),
         "job_source": None,
         "job_text": "Backend Engineer at Initech. Python.",
         "out_root": str(out_root),
@@ -142,16 +142,34 @@ def test_valid_hand_edit_is_rechecked_then_approved(tmp_path: Path) -> None:
     assert result.review_history[0].edited_blocks == ["exp.acme-corp.1"]
 
 
-def test_failing_hand_edit_goes_back_to_review(tmp_path: Path) -> None:
-    bad = "Built a \\textbf{Python} ingestion service for 5M events per day at 99.9\\% uptime."
-    good = "Built a \\textbf{Python} ingestion service for 2M events per day at 99.9\\% uptime."
+def test_broken_hand_edit_goes_back_to_review(tmp_path: Path) -> None:
+    bad = r"Built a \textbf{Python ingestion service for 2M events per day at 99.9\% uptime."
+    good = r"Built a \textbf{Python} ingestion service for 2M events per day at 99.9\% uptime."
     reviewer = ScriptedReviewer(
         [edit_text("exp.acme-corp.1", bad), edit_text("exp.acme-corp.1", good), approve]
     )
     result = run(ScriptedLLM([[GOOD_ACME]]), reviewer, tmp_path)
 
     shown = reviewer.requests[1]
-    assert not shown.can_approve  # approve isn't offered while the hand edit fails
-    assert "numbers must stay unchanged" in shown.entries[0].problems[0].message
+    assert not shown.can_approve  # structural problems in a hand edit still block
+    assert shown.entries[0].problems[0].rule == "braces"
     assert reviewer.requests[2].can_approve  # fixed on the second try
     assert result.plan.edits[0].new_text == good
+
+
+def test_hand_edit_truthfulness_problems_only_warn(tmp_path: Path) -> None:
+    """The reviewer owns the CV: a changed number or a new skill is their call."""
+    own = (
+        r"Built a \textbf{Python} and Rust ingestion service"
+        r" for 5M events per day at 99.9\% uptime."
+    )
+    reviewer = ScriptedReviewer([edit_text("exp.acme-corp.1", own), approve])
+    result = run(ScriptedLLM([[GOOD_ACME]]), reviewer, tmp_path)
+
+    shown = reviewer.requests[1]
+    assert shown.can_approve
+    problems = shown.entries[0].problems
+    assert {p.rule for p in problems} >= {"numbers", "new_skill"}
+    assert all(p.severity == "warning" for p in problems)
+    assert result.plan.edits[0].new_text == own
+    assert {w.rule for w in result.validation.warnings} >= {"numbers", "new_skill"}

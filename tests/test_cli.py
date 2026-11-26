@@ -83,6 +83,24 @@ def test_tailor_runs_pipeline(cv_file: Path, fake_run: list[dict[str, Any]]) -> 
     assert fake_run[0]["reviewer"] is cli.interactive_review
     assert "Initech: 1 edits approved after 2 review(s)." in result.output
     assert "Fit 64/100, 1 gap(s)." in result.output
+    assert fake_run[0]["custom_prompt"] == ""
+
+
+def test_tailor_passes_the_custom_prompt(cv_file: Path, fake_run: list[dict[str, Any]]) -> None:
+    args = ["tailor", str(cv_file), "--job-text", "Backend", "--prompt", "Be brief."]
+    assert runner.invoke(app, args).exit_code == 0
+    assert fake_run[0]["custom_prompt"] == "Be brief."
+
+
+def test_serve_listens_on_localhost_only(monkeypatch: pytest.MonkeyPatch, data_dir: Path) -> None:
+    import uvicorn
+
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, **options: calls.append(options))
+    result = runner.invoke(app, ["serve", "--port", "9000"])
+    assert result.exit_code == 0, result.output
+    assert calls == [{"host": "127.0.0.1", "port": 9000}]
+    assert "http://127.0.0.1:9000" in result.output
 
 
 # --- The interactive reviewer --------------------------------------------------------------
